@@ -114,7 +114,7 @@ src/
 - `DELETE /room/{id}` - Delete room (host only)
 
 **Bot Management**
-- `POST /room/{id}/bot/add` - Add AI bot to room
+- `POST /room/{id}/bot` - Add AI bot to room
 - `DELETE /room/{id}/bot/{bot_uuid}` - Remove bot from room
 
 ### WebSocket Protocol
@@ -195,6 +195,9 @@ Before committing, ensure:
 - `DATABASE_URL` - PostgreSQL connection string (optional)
 - `SESSION_EXPIRATION_DAYS` - Session lifetime in days (default: 365)
 - `PORT` - Server port (default: 3000)
+- `AI_BOT_SERVICE_URL` - Base URL for external bot inference service (default: `http://127.0.0.1:8001`)
+- `AI_BOT_SERVICE_PREDICT_PATH` - Predict endpoint path appended to base URL (default: `/api/v1/predict`)
+- `AI_BOT_HTTP_TIMEOUT_MS` - Timeout for AI bot HTTP requests in milliseconds (default: `1200`)
 
 ## License
 

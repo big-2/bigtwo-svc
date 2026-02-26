@@ -300,6 +300,13 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_add_bot_request_deserialization_ai() {
+        let json = r#"{"difficulty": "ai"}"#;
+        let request: AddBotRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.difficulty, BotDifficulty::Ai);
+    }
+
+    #[tokio::test]
     async fn test_add_bot_request_default_difficulty() {
         let json = r#"{}"#;
         let request: AddBotRequest = serde_json::from_str(json).unwrap();

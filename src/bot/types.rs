@@ -19,6 +19,7 @@ pub enum BotDifficulty {
     Easy,
     Medium,
     Hard,
+    Ai,
 }
 
 impl BotPlayer {

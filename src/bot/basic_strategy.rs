@@ -118,6 +118,38 @@ impl BasicBotStrategy {
         self.choose_best_move_with_rng(valid_moves, &mut rng)
     }
 
+    /// Build legal non-pass actions for the bot's current turn.
+    pub(crate) fn find_legal_moves_for_bot_turn(game: &Game, bot_uuid: &str) -> Vec<Vec<Card>> {
+        // Verify it's the bot's turn
+        if game.current_player_turn() != bot_uuid {
+            return Vec::new();
+        }
+
+        // Get the bot's available cards
+        let bot_player = match game.players().iter().find(|p| p.uuid == bot_uuid) {
+            Some(player) => player,
+            None => return Vec::new(),
+        };
+        let available_cards = &bot_player.cards;
+        let strategy = Self;
+
+        // Find all valid moves
+        let mut all_valid_moves = Vec::new();
+        all_valid_moves.extend(strategy.find_valid_singles(game, available_cards));
+
+        if available_cards.len() >= 2 {
+            all_valid_moves.extend(strategy.find_valid_pairs(game, available_cards));
+        }
+        if available_cards.len() >= 3 {
+            all_valid_moves.extend(strategy.find_valid_triples(game, available_cards));
+        }
+        if available_cards.len() >= 5 {
+            all_valid_moves.extend(strategy.find_valid_five_card_hands(game, available_cards));
+        }
+
+        all_valid_moves
+    }
+
     /// Choose the best move using lowest average rank, with randomized tie-breaking across categories.
     /// Categories are based on hand size: 1 (single), 2 (pair), 3 (triple), 5 (five-card combo).
     /// When multiple categories share the same best average, randomly pick one of those categories,
@@ -212,42 +244,7 @@ impl BasicBotStrategy {
 #[async_trait]
 impl BotStrategy for BasicBotStrategy {
     async fn decide_move(&self, game: &Game, bot_uuid: &str) -> Option<Vec<Card>> {
-        // Verify it's the bot's turn
-        if game.current_player_turn() != bot_uuid {
-            debug!(bot_uuid = %bot_uuid, "Not bot's turn");
-            return None;
-        }
-
-        // Get the bot's available cards
-        let bot_player = game.players().iter().find(|p| p.uuid == bot_uuid)?;
-        let available_cards = &bot_player.cards;
-
-        debug!(
-            bot_uuid = %bot_uuid,
-            card_count = available_cards.len(),
-            "Bot deciding move"
-        );
-
-        // Find all valid moves
-        let mut all_valid_moves = Vec::new();
-
-        // Try singles
-        all_valid_moves.extend(self.find_valid_singles(game, available_cards));
-
-        // Try pairs (only if we have at least 2 cards)
-        if available_cards.len() >= 2 {
-            all_valid_moves.extend(self.find_valid_pairs(game, available_cards));
-        }
-
-        if available_cards.len() >= 3 {
-            all_valid_moves.extend(self.find_valid_triples(game, available_cards));
-        }
-
-        if available_cards.len() >= 5 {
-            all_valid_moves.extend(self.find_valid_five_card_hands(game, available_cards));
-        }
-
-        // Choose the best move
+        let all_valid_moves = Self::find_legal_moves_for_bot_turn(game, bot_uuid);
         let chosen_move = self.choose_best_move(all_valid_moves);
 
         debug!(
