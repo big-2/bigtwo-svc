@@ -1,3 +1,4 @@
+pub mod ai_strategy;
 pub mod basic_strategy;
 pub mod bot_room_subscriber;
 pub mod handlers;
