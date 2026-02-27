@@ -23,7 +23,7 @@ use session::service::SessionService;
 use shared::AppState;
 use std::sync::Arc;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::bot::BotManager;
@@ -45,6 +45,14 @@ async fn main() {
         .init();
 
     info!("Starting Big Two game server");
+
+    if let Err(config_error) = bot::ai_strategy::validate_ai_bot_service_configuration() {
+        error!(
+            error = %config_error,
+            "Invalid AI bot service configuration"
+        );
+        std::process::exit(1);
+    }
 
     // Create shared application state with dependency injection
     // Smart configuration: Use PostgreSQL if DATABASE_URL is set, otherwise in-memory

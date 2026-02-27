@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use reqwest::Client;
+use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, time::Duration};
 use tracing::{debug, info, warn};
@@ -300,8 +300,22 @@ fn build_predict_url_from_env() -> Option<String> {
     )
 }
 
+pub fn validate_ai_bot_service_configuration() -> Result<(), String> {
+    let Some(base_url) = std::env::var("AI_BOT_SERVICE_URL").ok() else {
+        return Ok(());
+    };
+    let trimmed = base_url.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+    validate_ai_bot_service_base_url(trimmed)
+}
+
 fn build_predict_url(base_url_env: Option<&str>, path_env: Option<&str>) -> Option<String> {
     let base_url = base_url_env.map(str::trim).filter(|url| !url.is_empty())?;
+    if validate_ai_bot_service_base_url(base_url).is_err() {
+        return None;
+    }
     let predict_path = normalize_predict_path(path_env);
     Some(format!(
         "{}{}",
@@ -321,6 +335,35 @@ fn normalize_predict_path(path_env: Option<&str>) -> String {
     } else {
         format!("/{}", predict_path)
     }
+}
+
+fn validate_ai_bot_service_base_url(base_url: &str) -> Result<(), String> {
+    let parsed = Url::parse(base_url).map_err(|error| {
+        format!(
+            "Invalid AI_BOT_SERVICE_URL '{base_url}': {error}. Include http:// or https:// and no path."
+        )
+    })?;
+
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(format!(
+            "Invalid AI_BOT_SERVICE_URL '{base_url}': scheme must be http:// or https://"
+        ));
+    }
+
+    if parsed.host_str().is_none() {
+        return Err(format!(
+            "Invalid AI_BOT_SERVICE_URL '{base_url}': host is missing"
+        ));
+    }
+
+    let has_path = parsed.path() != "/";
+    if has_path || parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err(format!(
+            "Invalid AI_BOT_SERVICE_URL '{base_url}': use only the base URL and set AI_BOT_SERVICE_PREDICT_PATH separately"
+        ));
+    }
+
+    Ok(())
 }
 
 fn read_timeout_ms_from_env() -> u64 {
@@ -454,6 +497,30 @@ mod tests {
     fn build_predict_url_normalizes_predict_path() {
         let url = build_predict_url(Some("http://bot-svc:8001/"), Some("v1/predict"));
         assert_eq!(url, Some("http://bot-svc:8001/v1/predict".to_string()));
+    }
+
+    #[test]
+    fn build_predict_url_returns_none_for_invalid_service_url() {
+        let url = build_predict_url(Some("bot-svc:8001"), None);
+        assert!(url.is_none());
+    }
+
+    #[test]
+    fn validate_ai_bot_service_base_url_rejects_missing_scheme() {
+        let result = validate_ai_bot_service_base_url("bot-svc:8001");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_ai_bot_service_base_url_rejects_embedded_path() {
+        let result = validate_ai_bot_service_base_url("https://bot-svc:8001/api/v1/predict");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_ai_bot_service_base_url_accepts_https_base_url() {
+        let result = validate_ai_bot_service_base_url("https://bot-svc:8001");
+        assert!(result.is_ok());
     }
 
     #[test]
