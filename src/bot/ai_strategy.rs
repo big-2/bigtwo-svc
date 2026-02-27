@@ -24,6 +24,7 @@ struct PredictRequest {
     last_non_pass_cards: Vec<String>,
     consecutive_passes: usize,
     played_hands_count: usize,
+    played_cards_by_player: Vec<Vec<String>>,
     legal_actions: Vec<Vec<String>>,
     allow_pass: bool,
 }
@@ -102,6 +103,7 @@ impl AiBotStrategy {
         if player_card_counts.len() != 4 {
             return None;
         }
+        let played_cards_by_player = Self::played_cards_by_player(game)?;
 
         Some(PredictRequest {
             api_version: "v1",
@@ -117,9 +119,31 @@ impl AiBotStrategy {
                 .collect(),
             consecutive_passes: game.consecutive_passes(),
             played_hands_count: game.played_hands().len(),
+            played_cards_by_player,
             legal_actions,
             allow_pass,
         })
+    }
+
+    fn played_cards_by_player(game: &Game) -> Option<Vec<Vec<String>>> {
+        game.players()
+            .iter()
+            .map(|player| {
+                let starting_cards = game.starting_hands().get(&player.uuid)?;
+                let mut played_cards: Vec<Card> = starting_cards
+                    .iter()
+                    .copied()
+                    .filter(|card| !player.cards.contains(card))
+                    .collect();
+                played_cards.sort();
+                Some(
+                    played_cards
+                        .into_iter()
+                        .map(|card| card.to_string())
+                        .collect(),
+                )
+            })
+            .collect()
     }
 
     async fn predict(&self, request: &PredictRequest) -> Result<PredictResponse, String> {
@@ -289,4 +313,113 @@ fn read_timeout_ms_from_env() -> u64 {
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(DEFAULT_AI_BOT_TIMEOUT_MS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::{Player, Rank, Suit};
+    use std::collections::HashMap;
+
+    fn create_game_with_partial_progress() -> Game {
+        let p1_current = vec![Card::new(Rank::Four, Suit::Diamonds)];
+        let p2_current = vec![
+            Card::new(Rank::Five, Suit::Diamonds),
+            Card::new(Rank::Six, Suit::Diamonds),
+        ];
+        let p3_current = vec![Card::new(Rank::Eight, Suit::Diamonds)];
+        let p4_current = vec![];
+
+        let players = vec![
+            Player {
+                name: "p1".to_string(),
+                uuid: "bot-1".to_string(),
+                cards: p1_current,
+            },
+            Player {
+                name: "p2".to_string(),
+                uuid: "p2".to_string(),
+                cards: p2_current,
+            },
+            Player {
+                name: "p3".to_string(),
+                uuid: "p3".to_string(),
+                cards: p3_current,
+            },
+            Player {
+                name: "p4".to_string(),
+                uuid: "p4".to_string(),
+                cards: p4_current,
+            },
+        ];
+
+        let starting_hands = HashMap::from([
+            (
+                "bot-1".to_string(),
+                vec![
+                    Card::new(Rank::Three, Suit::Diamonds),
+                    Card::new(Rank::Four, Suit::Diamonds),
+                ],
+            ),
+            (
+                "p2".to_string(),
+                vec![
+                    Card::new(Rank::Five, Suit::Diamonds),
+                    Card::new(Rank::Six, Suit::Diamonds),
+                ],
+            ),
+            (
+                "p3".to_string(),
+                vec![
+                    Card::new(Rank::Seven, Suit::Diamonds),
+                    Card::new(Rank::Eight, Suit::Diamonds),
+                ],
+            ),
+            (
+                "p4".to_string(),
+                vec![
+                    Card::new(Rank::Nine, Suit::Diamonds),
+                    Card::new(Rank::Ten, Suit::Diamonds),
+                ],
+            ),
+        ]);
+
+        Game::new("room-1".to_string(), players, 0, 0, vec![], starting_hands)
+    }
+
+    #[test]
+    fn played_cards_by_player_is_derived_from_starting_hands() {
+        let game = create_game_with_partial_progress();
+
+        let played =
+            AiBotStrategy::played_cards_by_player(&game).expect("should build played cards");
+
+        assert_eq!(played.len(), 4);
+        assert_eq!(played[0], vec!["3D".to_string()]);
+        assert!(played[1].is_empty());
+        assert_eq!(played[2], vec!["7D".to_string()]);
+        assert_eq!(played[3], vec!["9D".to_string(), "TD".to_string()]);
+    }
+
+    #[test]
+    fn build_request_includes_played_cards_by_player() {
+        let game = create_game_with_partial_progress();
+        let strategy = AiBotStrategy::new();
+
+        let request = strategy
+            .build_request(
+                &game,
+                "bot-1",
+                vec![vec!["4D".to_string()], vec!["3D".to_string()]],
+                false,
+            )
+            .expect("request should be built");
+
+        assert_eq!(request.played_cards_by_player.len(), 4);
+        assert_eq!(request.played_cards_by_player[0], vec!["3D".to_string()]);
+        assert_eq!(
+            request.played_cards_by_player[3],
+            vec!["9D".to_string(), "TD".to_string()]
+        );
+    }
 }
