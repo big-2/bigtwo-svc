@@ -195,14 +195,11 @@ Before committing, ensure:
 - `DATABASE_URL` - PostgreSQL connection string (optional)
 - `SESSION_EXPIRATION_DAYS` - Session lifetime in days (default: 365)
 - `PORT` - Server port (default: 3000)
-- `AI_BOT_SERVICE_URL` - Primary base URL for external bot inference service (overrides defaults)
-- `AI_BOT_SERVICE_URLS` - Optional comma-separated base URLs (tried in order before fallback)
+- `AI_BOT_SERVICE_URL` - Base URL for external bot inference service (required for remote AI inference)
 - `AI_BOT_SERVICE_PREDICT_PATH` - Predict endpoint path appended to base URL (default: `/api/v1/predict`)
 - `AI_BOT_HTTP_TIMEOUT_MS` - Timeout for AI bot HTTP requests in milliseconds (default: `1200`)
 
-If no bot service URL env vars are provided, the backend tries these defaults in order:
-1. `http://127.0.0.1:8001`
-2. `http://bigtwo-bot-svc:8001`
+If `AI_BOT_SERVICE_URL` is unset, AI difficulty bots log a warning and fall back to `BasicBotStrategy`.
 
 ## License
 
