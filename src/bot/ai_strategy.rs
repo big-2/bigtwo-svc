@@ -10,6 +10,7 @@ use crate::game::{Card, Game};
 use super::{basic_strategy::BasicBotStrategy, types::BotStrategy};
 
 const DEFAULT_AI_BOT_SERVICE_URL: &str = "http://127.0.0.1:8001";
+const DEFAULT_AI_BOT_SERVICE_FALLBACK_URL: &str = "http://bigtwo-bot-svc:8001";
 const DEFAULT_AI_BOT_PREDICT_PATH: &str = "/api/v1/predict";
 const DEFAULT_AI_BOT_TIMEOUT_MS: u64 = 1200;
 
@@ -43,13 +44,13 @@ struct PredictResponse {
 /// back to `BasicBotStrategy` to preserve game progression.
 pub struct AiBotStrategy {
     client: Client,
-    endpoint: String,
+    endpoints: Vec<String>,
     fallback_strategy: BasicBotStrategy,
 }
 
 impl AiBotStrategy {
     pub fn new() -> Self {
-        let endpoint = build_predict_url_from_env();
+        let endpoints = build_predict_urls_from_env();
         let timeout_ms = read_timeout_ms_from_env();
         let client = Client::builder()
             .timeout(Duration::from_millis(timeout_ms))
@@ -64,7 +65,7 @@ impl AiBotStrategy {
 
         Self {
             client,
-            endpoint,
+            endpoints,
             fallback_strategy: BasicBotStrategy::new(),
         }
     }
@@ -147,24 +148,40 @@ impl AiBotStrategy {
     }
 
     async fn predict(&self, request: &PredictRequest) -> Result<PredictResponse, String> {
-        let response = self
-            .client
-            .post(&self.endpoint)
-            .json(request)
-            .send()
-            .await
-            .map_err(|e| format!("request error: {e}"))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(format!("status={status}, body={body}"));
+        if self.endpoints.is_empty() {
+            return Err("no AI bot service endpoints configured".to_string());
         }
 
-        response
-            .json::<PredictResponse>()
-            .await
-            .map_err(|e| format!("response decode error: {e}"))
+        let mut errors = Vec::new();
+
+        for endpoint in &self.endpoints {
+            let response = match self.client.post(endpoint).json(request).send().await {
+                Ok(response) => response,
+                Err(error) => {
+                    errors.push(format!("{endpoint}: request error: {error}"));
+                    continue;
+                }
+            };
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                errors.push(format!("{endpoint}: status={status}, body={body}"));
+                continue;
+            }
+
+            match response.json::<PredictResponse>().await {
+                Ok(parsed) => return Ok(parsed),
+                Err(error) => {
+                    errors.push(format!("{endpoint}: response decode error: {error}"));
+                }
+            }
+        }
+
+        Err(format!(
+            "all AI bot service endpoints failed: {}",
+            errors.join(" | ")
+        ))
     }
 
     fn move_key(cards: &[Card]) -> String {
@@ -235,7 +252,7 @@ impl BotStrategy for AiBotStrategy {
 
         debug!(
             bot_uuid = %bot_uuid,
-            endpoint = %self.endpoint,
+            endpoints = ?self.endpoints,
             legal_move_count = legal_moves.len(),
             allow_pass = allow_pass,
             "Calling AI bot service for move prediction"
@@ -289,22 +306,60 @@ impl BotStrategy for AiBotStrategy {
     }
 }
 
-fn build_predict_url_from_env() -> String {
-    let base_url = std::env::var("AI_BOT_SERVICE_URL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_AI_BOT_SERVICE_URL.to_string());
-    let predict_path = std::env::var("AI_BOT_SERVICE_PREDICT_PATH")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_AI_BOT_PREDICT_PATH.to_string());
-    let normalized_path = if predict_path.starts_with('/') {
-        predict_path
+fn build_predict_urls_from_env() -> Vec<String> {
+    let base_urls = resolve_base_urls(
+        std::env::var("AI_BOT_SERVICE_URLS").ok().as_deref(),
+        std::env::var("AI_BOT_SERVICE_URL").ok().as_deref(),
+    );
+    let predict_path =
+        normalize_predict_path(std::env::var("AI_BOT_SERVICE_PREDICT_PATH").ok().as_deref());
+
+    build_predict_urls(base_urls, &predict_path)
+}
+
+fn resolve_base_urls(urls_env: Option<&str>, url_env: Option<&str>) -> Vec<String> {
+    if let Some(urls) = urls_env {
+        let parsed: Vec<String> = urls
+            .split(',')
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+            .map(ToString::to_string)
+            .collect();
+        if !parsed.is_empty() {
+            return parsed;
+        }
+    }
+
+    if let Some(url) = url_env.map(str::trim).filter(|url| !url.is_empty()) {
+        return vec![url.to_string()];
+    }
+
+    vec![
+        DEFAULT_AI_BOT_SERVICE_URL.to_string(),
+        DEFAULT_AI_BOT_SERVICE_FALLBACK_URL.to_string(),
+    ]
+}
+
+fn normalize_predict_path(path_env: Option<&str>) -> String {
+    let predict_path = path_env
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_AI_BOT_PREDICT_PATH);
+
+    if predict_path.starts_with('/') {
+        predict_path.to_string()
     } else {
         format!("/{}", predict_path)
-    };
+    }
+}
 
-    format!("{}{}", base_url.trim_end_matches('/'), normalized_path)
+fn build_predict_urls(base_urls: Vec<String>, predict_path: &str) -> Vec<String> {
+    let mut dedupe = HashSet::new();
+    base_urls
+        .into_iter()
+        .map(|base_url| format!("{}{}", base_url.trim_end_matches('/'), predict_path))
+        .filter(|url| dedupe.insert(url.clone()))
+        .collect()
 }
 
 fn read_timeout_ms_from_env() -> u64 {
@@ -420,6 +475,72 @@ mod tests {
         assert_eq!(
             request.played_cards_by_player[3],
             vec!["9D".to_string(), "TD".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_base_urls_prefers_multi_url_env() {
+        let urls = resolve_base_urls(
+            Some("http://a:8001, http://b:8001, ,http://c:8001"),
+            Some("http://single:8001"),
+        );
+        assert_eq!(
+            urls,
+            vec![
+                "http://a:8001".to_string(),
+                "http://b:8001".to_string(),
+                "http://c:8001".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_base_urls_falls_back_to_single_url_env() {
+        let urls = resolve_base_urls(None, Some("http://single:8001"));
+        assert_eq!(urls, vec!["http://single:8001".to_string()]);
+    }
+
+    #[test]
+    fn resolve_base_urls_uses_defaults_when_env_unset() {
+        let urls = resolve_base_urls(None, None);
+        assert_eq!(
+            urls,
+            vec![
+                "http://127.0.0.1:8001".to_string(),
+                "http://bigtwo-bot-svc:8001".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn normalize_predict_path_adds_leading_slash() {
+        assert_eq!(
+            normalize_predict_path(Some("api/v1/predict")),
+            "/api/v1/predict".to_string()
+        );
+        assert_eq!(
+            normalize_predict_path(Some("/api/v1/predict")),
+            "/api/v1/predict".to_string()
+        );
+    }
+
+    #[test]
+    fn build_predict_urls_deduplicates_endpoints() {
+        let urls = build_predict_urls(
+            vec![
+                "http://a:8001/".to_string(),
+                "http://a:8001".to_string(),
+                "http://b:8001".to_string(),
+            ],
+            "/api/v1/predict",
+        );
+
+        assert_eq!(
+            urls,
+            vec![
+                "http://a:8001/api/v1/predict".to_string(),
+                "http://b:8001/api/v1/predict".to_string(),
+            ]
         );
     }
 }
