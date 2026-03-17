@@ -121,9 +121,7 @@ impl StatsService {
                     .get_player_profile_stats(player_uuid, display_name)
                     .await
             }
-            None => Err(StatsError::Repository(
-                "Completed game history repository is not configured".to_string(),
-            )),
+            None => Ok(None),
         }
     }
 
@@ -139,9 +137,10 @@ impl StatsService {
                     .get_recent_games_for_player(player_uuid, limit, before)
                     .await
             }
-            None => Err(StatsError::Repository(
-                "Completed game history repository is not configured".to_string(),
-            )),
+            None => Ok(super::PlayerRecentGamesResponse {
+                games: vec![],
+                next_before: None,
+            }),
         }
     }
 
@@ -156,9 +155,7 @@ impl StatsService {
                     .get_completed_game_for_player(player_uuid, game_id)
                     .await
             }
-            None => Err(StatsError::Repository(
-                "Completed game history repository is not configured".to_string(),
-            )),
+            None => Ok(None),
         }
     }
 
