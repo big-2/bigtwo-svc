@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use sqlx::PgPool;
-use sqlx::Row;
+use sqlx::{PgPool, Row};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -21,7 +20,6 @@ use super::{
 
 #[async_trait]
 pub trait StatsRepository: Send + Sync {
-    /// Records a game result and returns the updated room stats
     async fn record_game(&self, game_result: GameResult) -> Result<RoomStats, StatsError>;
     async fn get_room_stats(&self, room_id: &str) -> Result<Option<RoomStats>, StatsError>;
     async fn reset_room_stats(&self, room_id: &str) -> Result<(), StatsError>;
@@ -29,7 +27,7 @@ pub trait StatsRepository: Send + Sync {
 
 #[async_trait]
 pub trait GameHistoryRepository: Send + Sync {
-    async fn record_completed_game(&self, game_result: &GameResult) -> Result<(), StatsError>;
+    async fn record_completed_game(&self, game_result: &GameResult) -> Result<bool, StatsError>;
     async fn get_player_profile_stats(
         &self,
         player_uuid: &str,
@@ -112,6 +110,221 @@ impl StatsRepository for InMemoryStatsRepository {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct InMemoryProfileAggregate {
+    games_played: u64,
+    wins: u64,
+    current_win_streak: u64,
+    best_win_streak: u64,
+    total_turns: u64,
+    total_passes: u64,
+    total_plays: u64,
+    total_cards_played: u64,
+    human_games_played: u64,
+    human_wins: u64,
+    bot_games_played: u64,
+    bot_wins: u64,
+}
+
+#[derive(Debug, Default)]
+pub struct InMemoryGameHistoryRepository {
+    games: Arc<RwLock<HashMap<String, GameResult>>>,
+    profile_aggregates: Arc<RwLock<HashMap<String, InMemoryProfileAggregate>>>,
+}
+
+impl InMemoryGameHistoryRepository {
+    pub fn new() -> Self {
+        Self {
+            games: Arc::new(RwLock::new(HashMap::new())),
+            profile_aggregates: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+}
+
+#[async_trait]
+impl GameHistoryRepository for InMemoryGameHistoryRepository {
+    async fn record_completed_game(&self, game_result: &GameResult) -> Result<bool, StatsError> {
+        {
+            let games = self.games.read().await;
+            if games.contains_key(&game_result.game_id) {
+                return Ok(false);
+            }
+        }
+
+        {
+            let mut games = self.games.write().await;
+            if games.contains_key(&game_result.game_id) {
+                return Ok(false);
+            }
+            games.insert(game_result.game_id.clone(), game_result.clone());
+        }
+
+        let mut aggregates = self.profile_aggregates.write().await;
+        for player in &game_result.players {
+            let aggregate = aggregates.entry(player.uuid.clone()).or_default();
+            aggregate.games_played += 1;
+            aggregate.wins += u64::from(player.won);
+            aggregate.total_turns += player.turns_taken as u64;
+            aggregate.total_passes += player.passes as u64;
+            aggregate.total_plays += player.plays as u64;
+            aggregate.total_cards_played += player.cards_played as u64;
+
+            if player.won {
+                aggregate.current_win_streak += 1;
+                aggregate.best_win_streak =
+                    aggregate.best_win_streak.max(aggregate.current_win_streak);
+            } else {
+                aggregate.current_win_streak = 0;
+            }
+
+            if game_result.had_bots {
+                aggregate.bot_games_played += 1;
+                aggregate.bot_wins += u64::from(player.won);
+            } else {
+                aggregate.human_games_played += 1;
+                aggregate.human_wins += u64::from(player.won);
+            }
+        }
+
+        Ok(true)
+    }
+
+    async fn get_player_profile_stats(
+        &self,
+        player_uuid: &str,
+        display_name: &str,
+    ) -> Result<Option<PlayerProfileStatsResponse>, StatsError> {
+        let aggregate = {
+            let aggregates = self.profile_aggregates.read().await;
+            aggregates.get(player_uuid).cloned()
+        };
+        let Some(aggregate) = aggregate else {
+            return Ok(None);
+        };
+
+        let recent_games = self
+            .get_recent_games_for_player(player_uuid, 25, None)
+            .await?
+            .games;
+
+        let wins_last_10 = recent_games
+            .iter()
+            .take(10)
+            .filter(|game| game.winner_uuid == player_uuid)
+            .count() as u64;
+        let wins_last_25 = recent_games
+            .iter()
+            .take(25)
+            .filter(|game| game.winner_uuid == player_uuid)
+            .count() as u64;
+
+        Ok(Some(PlayerProfileStatsResponse {
+            player_uuid: player_uuid.to_string(),
+            display_name: display_name.to_string(),
+            summary: PlayerStatsSummary {
+                games_played: aggregate.games_played,
+                wins: aggregate.wins,
+                win_rate: ratio(aggregate.wins, aggregate.games_played),
+                current_win_streak: aggregate.current_win_streak,
+                best_win_streak: aggregate.best_win_streak,
+            },
+            play_style: PlayerPlayStyle {
+                total_turns: aggregate.total_turns,
+                total_passes: aggregate.total_passes,
+                pass_rate: ratio(aggregate.total_passes, aggregate.total_turns),
+                total_plays: aggregate.total_plays,
+                total_cards_played: aggregate.total_cards_played,
+                average_cards_per_play: ratio(aggregate.total_cards_played, aggregate.total_plays),
+            },
+            splits: PlayerStatsSplits {
+                human_only: PlayerSplitSummary {
+                    games_played: aggregate.human_games_played,
+                    wins: aggregate.human_wins,
+                    win_rate: ratio(aggregate.human_wins, aggregate.human_games_played),
+                },
+                with_bots: PlayerSplitSummary {
+                    games_played: aggregate.bot_games_played,
+                    wins: aggregate.bot_wins,
+                    win_rate: ratio(aggregate.bot_wins, aggregate.bot_games_played),
+                },
+            },
+            recent_form: PlayerRecentForm {
+                last_10: PlayerRecentWindow {
+                    wins: wins_last_10,
+                    win_rate: ratio(wins_last_10, recent_games.len().min(10) as u64),
+                },
+                last_25: PlayerRecentWindow {
+                    wins: wins_last_25,
+                    win_rate: ratio(wins_last_25, recent_games.len().min(25) as u64),
+                },
+            },
+        }))
+    }
+
+    async fn get_recent_games_for_player(
+        &self,
+        player_uuid: &str,
+        limit: u32,
+        before: Option<DateTime<Utc>>,
+    ) -> Result<PlayerRecentGamesResponse, StatsError> {
+        let before = before.unwrap_or_else(Utc::now);
+        let games = self.games.read().await;
+        let mut relevant_games: Vec<_> = games
+            .values()
+            .filter(|game| {
+                game.completed_at < before && game.players.iter().any(|p| p.uuid == player_uuid)
+            })
+            .cloned()
+            .collect();
+        relevant_games.sort_by_key(|game| std::cmp::Reverse(game.completed_at));
+
+        let selected: Vec<_> = relevant_games.into_iter().take(limit as usize).collect();
+        let next_before = selected.last().map(|game| game.completed_at);
+
+        let games = selected
+            .into_iter()
+            .filter_map(|game| {
+                let player = game.players.iter().find(|p| p.uuid == player_uuid)?;
+                Some(PlayerRecentGameSummary {
+                    game_id: game.game_id.clone(),
+                    completed_at: game.completed_at,
+                    winner_uuid: game.winner_uuid.clone(),
+                    cards_remaining: player.cards_remaining,
+                    final_score: player.final_score,
+                    had_bots: game.had_bots,
+                    opponents: game
+                        .players
+                        .iter()
+                        .filter(|p| p.uuid != player_uuid)
+                        .map(|p| GameOpponentSummary {
+                            player_uuid: p.uuid.clone(),
+                            won: p.won,
+                        })
+                        .collect(),
+                })
+            })
+            .collect();
+
+        Ok(PlayerRecentGamesResponse { games, next_before })
+    }
+
+    async fn get_completed_game_for_player(
+        &self,
+        player_uuid: &str,
+        game_id: &str,
+    ) -> Result<Option<CompletedGameDetailResponse>, StatsError> {
+        let games = self.games.read().await;
+        let Some(game) = games.get(game_id) else {
+            return Ok(None);
+        };
+        if !game.players.iter().any(|player| player.uuid == player_uuid) {
+            return Ok(None);
+        }
+
+        Ok(Some(build_game_detail_response(game)))
+    }
+}
+
 pub struct PostgresGameHistoryRepository {
     pool: PgPool,
 }
@@ -124,7 +337,7 @@ impl PostgresGameHistoryRepository {
 
 #[async_trait]
 impl GameHistoryRepository for PostgresGameHistoryRepository {
-    async fn record_completed_game(&self, game_result: &GameResult) -> Result<(), StatsError> {
+    async fn record_completed_game(&self, game_result: &GameResult) -> Result<bool, StatsError> {
         debug!(game_id = %game_result.game_id, "Persisting completed game history");
 
         let mut tx = self
@@ -133,7 +346,7 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
             .await
             .map_err(|e| StatsError::Repository(e.to_string()))?;
 
-        sqlx::query(
+        let insert_result = sqlx::query(
             r#"
             INSERT INTO completed_games (
                 game_id,
@@ -144,7 +357,6 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
                 completed_at,
                 had_bots
             ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ON CONFLICT (game_id) DO NOTHING
             "#,
         )
         .bind(&game_result.game_id)
@@ -155,23 +367,18 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
         .bind(game_result.completed_at)
         .bind(game_result.had_bots)
         .execute(&mut *tx)
-        .await
-        .map_err(|e| {
-            warn!(error = %e, game_id = %game_result.game_id, "Failed to insert completed game");
-            StatsError::Repository(e.to_string())
-        })?;
+        .await;
 
-        sqlx::query("DELETE FROM completed_game_players WHERE game_id = $1")
-            .bind(&game_result.game_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| StatsError::Repository(e.to_string()))?;
-
-        sqlx::query("DELETE FROM completed_game_moves WHERE game_id = $1")
-            .bind(&game_result.game_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| StatsError::Repository(e.to_string()))?;
+        match insert_result {
+            Ok(_) => {}
+            Err(sqlx::Error::Database(err)) if err.code().as_deref() == Some("23505") => {
+                return Ok(false);
+            }
+            Err(e) => {
+                warn!(error = %e, game_id = %game_result.game_id, "Failed to insert completed game");
+                return Err(StatsError::Repository(e.to_string()));
+            }
+        }
 
         for player in &game_result.players {
             sqlx::query(
@@ -179,7 +386,6 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
                 INSERT INTO completed_game_players (
                     game_id,
                     player_uuid,
-                    placement,
                     won,
                     cards_remaining,
                     raw_score,
@@ -191,12 +397,11 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
                     started_first,
                     had_bots,
                     completed_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                 "#,
             )
             .bind(&game_result.game_id)
             .bind(&player.uuid)
-            .bind(player.placement as i16)
             .bind(player.won)
             .bind(player.cards_remaining as i16)
             .bind(player.raw_score)
@@ -249,7 +454,6 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
                     player_uuid,
                     games_played,
                     wins,
-                    total_finish_position,
                     current_win_streak,
                     best_win_streak,
                     total_turns,
@@ -265,8 +469,9 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
                     $1,
                     1,
                     $2,
+                    $2,
+                    $2,
                     $3,
-                    $4,
                     $4,
                     $5,
                     $6,
@@ -274,14 +479,11 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
                     $8,
                     $9,
                     $10,
-                    $11,
-                    $12,
                     NOW()
                 )
                 ON CONFLICT (player_uuid) DO UPDATE SET
                     games_played = player_profile_stats.games_played + 1,
                     wins = player_profile_stats.wins + EXCLUDED.wins,
-                    total_finish_position = player_profile_stats.total_finish_position + EXCLUDED.total_finish_position,
                     current_win_streak = CASE
                         WHEN EXCLUDED.wins = 1 THEN player_profile_stats.current_win_streak + 1
                         ELSE 0
@@ -306,8 +508,6 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
             )
             .bind(&player.uuid)
             .bind(if player.won { 1_i64 } else { 0_i64 })
-            .bind(player.placement as i64)
-            .bind(if player.won { 1_i64 } else { 0_i64 })
             .bind(player.turns_taken as i64)
             .bind(player.passes as i64)
             .bind(player.plays as i64)
@@ -331,7 +531,9 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
 
         tx.commit()
             .await
-            .map_err(|e| StatsError::Repository(e.to_string()))
+            .map_err(|e| StatsError::Repository(e.to_string()))?;
+
+        Ok(true)
     }
 
     async fn get_player_profile_stats(
@@ -344,7 +546,6 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
             SELECT
                 games_played,
                 wins,
-                total_finish_position,
                 current_win_streak,
                 best_win_streak,
                 total_turns,
@@ -384,7 +585,6 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
 
         let games_played = row.get::<i64, _>("games_played") as u64;
         let wins = row.get::<i64, _>("wins") as u64;
-        let total_finish_position = row.get::<i64, _>("total_finish_position") as u64;
         let total_turns = row.get::<i64, _>("total_turns") as u64;
         let total_passes = row.get::<i64, _>("total_passes") as u64;
         let total_plays = row.get::<i64, _>("total_plays") as u64;
@@ -412,7 +612,6 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
                 games_played,
                 wins,
                 win_rate: ratio(wins, games_played),
-                average_finish: ratio(total_finish_position, games_played),
                 current_win_streak: row.get::<i64, _>("current_win_streak") as u64,
                 best_win_streak: row.get::<i64, _>("best_win_streak") as u64,
             },
@@ -460,7 +659,6 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
             r#"
             SELECT
                 cgp.game_id,
-                cgp.placement,
                 cgp.cards_remaining,
                 cgp.final_score,
                 cg.winner_uuid,
@@ -488,10 +686,10 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
             let completed_at = row.get::<DateTime<Utc>, _>("completed_at");
             let opponent_rows = sqlx::query(
                 r#"
-                SELECT player_uuid, placement
+                SELECT player_uuid, won
                 FROM completed_game_players
                 WHERE game_id = $1 AND player_uuid <> $2
-                ORDER BY placement ASC, player_uuid ASC
+                ORDER BY player_uuid ASC
                 "#,
             )
             .bind(&game_id)
@@ -504,7 +702,7 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
                 .into_iter()
                 .map(|opponent| GameOpponentSummary {
                     player_uuid: opponent.get("player_uuid"),
-                    placement: opponent.get::<i16, _>("placement") as u8,
+                    won: opponent.get("won"),
                 })
                 .collect();
 
@@ -512,7 +710,6 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
             games.push(PlayerRecentGameSummary {
                 game_id,
                 completed_at,
-                placement: row.get::<i16, _>("placement") as u8,
                 winner_uuid: row.get("winner_uuid"),
                 cards_remaining: row.get::<i16, _>("cards_remaining") as u8,
                 final_score: row.get("final_score"),
@@ -562,7 +759,6 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
             r#"
             SELECT
                 player_uuid,
-                placement,
                 won,
                 cards_remaining,
                 raw_score,
@@ -574,7 +770,7 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
                 started_first
             FROM completed_game_players
             WHERE game_id = $1
-            ORDER BY placement ASC, player_uuid ASC
+            ORDER BY player_uuid ASC
             "#,
         )
         .bind(game_id)
@@ -607,7 +803,6 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
                 .into_iter()
                 .map(|row| CompletedGameDetailPlayer {
                     player_uuid: row.get("player_uuid"),
-                    placement: row.get::<i16, _>("placement") as u8,
                     won: row.get("won"),
                     cards_remaining: row.get::<i16, _>("cards_remaining") as u8,
                     raw_score: row.get("raw_score"),
@@ -635,6 +830,44 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
     }
 }
 
+fn build_game_detail_response(game: &GameResult) -> CompletedGameDetailResponse {
+    CompletedGameDetailResponse {
+        game_id: game.game_id.clone(),
+        room_id: game.room_id.clone(),
+        game_number: game.game_number,
+        winner_uuid: game.winner_uuid.clone(),
+        started_at: game.started_at,
+        completed_at: game.completed_at,
+        had_bots: game.had_bots,
+        players: game
+            .players
+            .iter()
+            .map(|player| CompletedGameDetailPlayer {
+                player_uuid: player.uuid.clone(),
+                won: player.won,
+                cards_remaining: player.cards_remaining,
+                raw_score: player.raw_score,
+                final_score: player.final_score,
+                turns_taken: player.turns_taken,
+                passes: player.passes,
+                plays: player.plays,
+                cards_played: player.cards_played,
+                started_first: player.started_first,
+            })
+            .collect(),
+        moves: game
+            .moves
+            .iter()
+            .map(|mv| CompletedGameDetailMove {
+                sequence: mv.sequence,
+                player_uuid: mv.player_uuid.clone(),
+                action: mv.action,
+                cards: mv.cards.clone(),
+            })
+            .collect(),
+    }
+}
+
 fn ratio(numerator: u64, denominator: u64) -> f64 {
     if denominator == 0 {
         0.0
@@ -646,7 +879,6 @@ fn ratio(numerator: u64, denominator: u64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
 
     fn sample_game(
         room_id: &str,
@@ -662,9 +894,8 @@ mod tests {
                 .into_iter()
                 .map(
                     |(uuid, cards_remaining, raw_score, final_score)| PlayerGameResult {
-                        uuid,
-                        placement: if cards_remaining == 0 { 1 } else { 2 },
-                        won: cards_remaining == 0,
+                        uuid: uuid.clone(),
+                        won: uuid == winner_uuid,
                         cards_remaining,
                         raw_score,
                         final_score,
@@ -713,48 +944,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn maintains_streaks_across_games() {
-        let repo = InMemoryStatsRepository::new();
-
-        let players = vec![
-            ("player-1".to_string(), 0, 0, 0),
-            ("player-2".to_string(), 3, 3, 3),
-        ];
-
-        repo.record_game(sample_game("room", "player-1", players.clone()))
-            .await
-            .unwrap();
-        repo.record_game(sample_game("room", "player-1", players.clone()))
-            .await
-            .unwrap();
-        repo.record_game(sample_game("room", "player-2", players.clone()))
-            .await
-            .unwrap();
-
-        let stats = repo.get_room_stats("room").await.unwrap().unwrap();
-        let player1 = stats.player_stats.get("player-1").unwrap();
-        assert_eq!(player1.wins, 2);
-        assert_eq!(player1.best_win_streak, 2);
-        assert_eq!(player1.current_win_streak, 0);
-    }
-
-    #[tokio::test]
-    async fn reset_clears_room_stats() {
-        let repo = InMemoryStatsRepository::new();
-        repo.record_game(sample_game(
-            "room-reset",
+    async fn in_memory_history_is_idempotent() {
+        let repo = InMemoryGameHistoryRepository::new();
+        let game = sample_game(
+            "room-1",
             "player-1",
             vec![
                 ("player-1".to_string(), 0, 0, 0),
-                ("player-2".to_string(), 2, 2, 2),
+                ("player-2".to_string(), 5, 5, 5),
             ],
-        ))
-        .await
-        .unwrap();
+        );
 
-        repo.reset_room_stats("room-reset").await.unwrap();
+        assert!(repo.record_completed_game(&game).await.unwrap());
+        assert!(!repo.record_completed_game(&game).await.unwrap());
 
-        let stats = repo.get_room_stats("room-reset").await.unwrap();
-        assert!(stats.is_none());
+        let stats = repo
+            .get_player_profile_stats("player-1", "Player 1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stats.summary.games_played, 1);
+        assert_eq!(stats.summary.wins, 1);
     }
 }

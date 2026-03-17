@@ -28,7 +28,10 @@ use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::bot::BotManager;
-use crate::stats::{service::StatsService, InMemoryStatsRepository, PostgresGameHistoryRepository};
+use crate::stats::{
+    service::StatsService, InMemoryGameHistoryRepository, InMemoryStatsRepository,
+    PostgresGameHistoryRepository,
+};
 use crate::websockets::InMemoryConnectionManager;
 use crate::{
     event::EventBus, game::GameService, user::mapping_service::InMemoryPlayerMappingService,
@@ -107,7 +110,9 @@ async fn main() {
             PostgresGameHistoryRepository::new(pool.clone()),
         ));
     } else {
-        info!("🗂️ Completed game history persistence disabled (no PostgreSQL)");
+        info!("🗂️ Completed game history persistence enabled (in-memory)");
+        stats_service_builder = stats_service_builder
+            .with_game_history_repository(Arc::new(InMemoryGameHistoryRepository::new()));
     }
     let stats_service = Arc::new(stats_service_builder.build());
     // Create RoomService focused purely on business logic

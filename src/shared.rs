@@ -13,7 +13,9 @@ use crate::room::repository::RoomRepository;
 use crate::room::service::RoomService;
 use crate::session::repository::SessionRepository;
 use crate::session::service::SessionService;
-use crate::stats::{service::StatsService, InMemoryStatsRepository, StatsRepository};
+use crate::stats::{
+    service::StatsService, InMemoryGameHistoryRepository, InMemoryStatsRepository, StatsRepository,
+};
 use crate::websockets::ConnectionManager;
 use crate::{event::EventBus, game::GameService, user::PlayerMappingService};
 
@@ -206,6 +208,7 @@ impl AppStateBuilder {
         let stats_service = self.stats_service.unwrap_or_else(|| {
             Arc::new(
                 StatsService::builder(stats_repository.clone())
+                    .with_game_history_repository(Arc::new(InMemoryGameHistoryRepository::new()))
                     .with_bot_manager(bot_manager.clone())
                     .build(),
             )
@@ -277,6 +280,7 @@ impl AppStateBuilder {
         let stats_service = self.stats_service.unwrap_or_else(|| {
             Arc::new(
                 StatsService::builder(stats_repository.clone())
+                    .with_game_history_repository(Arc::new(InMemoryGameHistoryRepository::new()))
                     .with_bot_manager(bot_manager.clone())
                     .build(),
             )

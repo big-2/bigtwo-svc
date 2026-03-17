@@ -14,7 +14,6 @@ CREATE INDEX IF NOT EXISTS idx_completed_games_room_completed_at
 CREATE TABLE IF NOT EXISTS completed_game_players (
     game_id TEXT NOT NULL REFERENCES completed_games(game_id) ON DELETE CASCADE,
     player_uuid VARCHAR(36) NOT NULL,
-    placement SMALLINT NOT NULL,
     won BOOLEAN NOT NULL,
     cards_remaining SMALLINT NOT NULL,
     raw_score INTEGER NOT NULL,

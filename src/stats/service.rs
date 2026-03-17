@@ -83,7 +83,7 @@ impl StatsService {
             .collect();
 
         let game_result = GameResult {
-            game_id: format!("{}:{game_number}", game.id()),
+            game_id: format!("{}:{}", game.id(), game.created_at().timestamp_millis()),
             room_id: room_id.to_string(),
             game_number,
             winner_uuid: winner_uuid.to_string(),
@@ -94,10 +94,24 @@ impl StatsService {
             had_bots,
         };
 
-        if let Some(history_repository) = &self.game_history_repository {
+        let inserted = if let Some(history_repository) = &self.game_history_repository {
             history_repository
                 .record_completed_game(&game_result)
-                .await?;
+                .await?
+        } else {
+            true
+        };
+
+        if !inserted {
+            let room_stats = self
+                .repository
+                .get_room_stats(room_id)
+                .await?
+                .unwrap_or_else(|| RoomStats {
+                    room_id: room_id.to_string(),
+                    ..RoomStats::default()
+                });
+            return Ok((game_result, room_stats));
         }
 
         // Record game and get updated stats in one operation
@@ -185,7 +199,6 @@ impl StatsService {
                 .iter()
                 .map(|(uuid, cards)| PlayerGameResult {
                     uuid: uuid.clone(),
-                    placement: 0,
                     won: uuid == winner_uuid,
                     cards_remaining: *cards as u8,
                     raw_score: current_scores.get(uuid).copied().unwrap_or_default(),
@@ -285,13 +298,6 @@ impl StatsService {
         raw_scores: &HashMap<String, i32>,
         final_scores: &HashMap<String, i32>,
     ) -> Vec<PlayerGameResult> {
-        let mut placements: HashMap<String, u8> = HashMap::new();
-        let mut ordered_players: Vec<_> = game.players().iter().enumerate().collect();
-        ordered_players.sort_by_key(|(index, player)| (player.cards.len(), *index));
-        for (placement, (_, player)) in ordered_players.iter().enumerate() {
-            placements.insert(player.uuid.clone(), placement as u8 + 1);
-        }
-
         game.players()
             .iter()
             .enumerate()
@@ -318,7 +324,6 @@ impl StatsService {
 
                 PlayerGameResult {
                     uuid: player.uuid.clone(),
-                    placement: placements.get(&player.uuid).copied().unwrap_or_default(),
                     won: player.uuid == winner_uuid,
                     cards_remaining: player.cards.len() as u8,
                     raw_score: raw_scores.get(&player.uuid).copied().unwrap_or_default(),
@@ -479,7 +484,7 @@ mod tests {
     use crate::{
         bot::BotManager,
         game::{Card, Game},
-        stats::InMemoryStatsRepository,
+        stats::{InMemoryGameHistoryRepository, InMemoryStatsRepository},
     };
     use tokio::sync::Mutex;
 
@@ -604,7 +609,6 @@ mod tests {
             .iter()
             .find(|player| player.uuid == "alice")
             .unwrap();
-        assert_eq!(alice.placement, 1);
         assert!(alice.won);
         assert_eq!(alice.turns_taken, 2);
         assert_eq!(alice.passes, 0);
@@ -617,12 +621,37 @@ mod tests {
             .iter()
             .find(|player| player.uuid == "bob")
             .unwrap();
-        assert_eq!(bob.placement, 2);
         assert!(!bob.won);
         assert_eq!(bob.turns_taken, 1);
         assert_eq!(bob.passes, 1);
         assert_eq!(bob.plays, 0);
         assert_eq!(bob.cards_played, 0);
+    }
+
+    #[tokio::test]
+    async fn duplicate_completed_game_does_not_double_count_room_stats() {
+        let repo = Arc::new(InMemoryStatsRepository::new());
+        let history_repo = Arc::new(InMemoryGameHistoryRepository::new());
+        let service = StatsService::builder(repo.clone())
+            .with_game_history_repository(history_repo)
+            .build();
+
+        let game = game_with_players(vec![
+            ("Alice".to_string(), "alice".to_string(), vec![card("3D")]),
+            ("Bob".to_string(), "bob".to_string(), vec![card("4H")]),
+        ]);
+
+        let (_, room_stats) = service
+            .process_completed_game("room", &game, "alice")
+            .await
+            .unwrap();
+        assert_eq!(room_stats.games_played, 1);
+
+        let (_, room_stats) = service
+            .process_completed_game("room", &game, "alice")
+            .await
+            .unwrap();
+        assert_eq!(room_stats.games_played, 1);
     }
 
     #[tokio::test]

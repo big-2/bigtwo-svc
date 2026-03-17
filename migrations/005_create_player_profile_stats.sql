@@ -2,7 +2,6 @@ CREATE TABLE IF NOT EXISTS player_profile_stats (
     player_uuid VARCHAR(36) PRIMARY KEY,
     games_played BIGINT NOT NULL DEFAULT 0,
     wins BIGINT NOT NULL DEFAULT 0,
-    total_finish_position BIGINT NOT NULL DEFAULT 0,
     current_win_streak BIGINT NOT NULL DEFAULT 0,
     best_win_streak BIGINT NOT NULL DEFAULT 0,
     total_turns BIGINT NOT NULL DEFAULT 0,
