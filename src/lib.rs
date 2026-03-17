@@ -4,6 +4,7 @@
 pub mod bot;
 pub mod event;
 pub mod game;
+pub mod player;
 pub mod room;
 pub mod session;
 pub mod shared;

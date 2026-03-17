@@ -8,7 +8,10 @@ pub mod repository;
 
 pub use errors::StatsError;
 pub use models::*;
-pub use repository::{InMemoryStatsRepository, StatsRepository};
+#[allow(unused_imports)] // Public re-exports for handlers and future consumers
+pub use repository::{
+    GameHistoryRepository, InMemoryStatsRepository, PostgresGameHistoryRepository, StatsRepository,
+};
 #[allow(unused_imports)] // Used by integration tests
 pub use service::{StatsRoomSubscriber, StatsService};
 
