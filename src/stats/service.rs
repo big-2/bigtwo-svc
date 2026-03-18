@@ -13,7 +13,7 @@ use crate::{
 use super::{
     calculators::{CardCountScoreCalculator, TenPlusMultiplierCalculator},
     collectors::{CardsRemainingCollector, WinLossCollector},
-    repository::StatsRepository,
+    repository::{GameHistoryRepository, StatsRepository},
     CalculationContext, CollectedData, GameResult, PlayerGameResult, RoomStats, ScoreCalculator,
     StatCollector, StatsError,
 };
@@ -22,6 +22,7 @@ pub struct StatsService {
     collectors: Vec<Arc<dyn StatCollector>>,
     calculators: Vec<Arc<dyn ScoreCalculator>>,
     repository: Arc<dyn StatsRepository>,
+    game_history_repository: Option<Arc<dyn GameHistoryRepository>>,
     bot_manager: Option<Arc<BotManager>>,
     room_mutexes: Arc<RwLock<HashMap<String, Arc<AsyncMutex<()>>>>>,
 }
@@ -68,24 +69,50 @@ impl StatsService {
             completed_at,
         );
 
-        let player_results: Vec<PlayerGameResult> = player_metadata
+        let player_results =
+            self.build_player_results(game, winner_uuid, &raw_scores, &final_scores);
+        let moves = game
+            .move_log()
             .iter()
-            .map(|(uuid, cards)| PlayerGameResult {
-                uuid: uuid.clone(),
-                cards_remaining: *cards as u8,
-                raw_score: raw_scores.get(uuid).copied().unwrap_or_default(),
-                final_score: final_scores.get(uuid).copied().unwrap_or_default(),
+            .map(|mv| super::GameMoveResult {
+                sequence: mv.sequence,
+                player_uuid: mv.player_uuid.clone(),
+                action: mv.action,
+                cards: mv.cards.clone(),
             })
             .collect();
 
         let game_result = GameResult {
+            game_id: format!("{}:{}", game.id(), game.created_at().timestamp_millis()),
             room_id: room_id.to_string(),
             game_number,
             winner_uuid: winner_uuid.to_string(),
             players: player_results,
+            moves,
+            started_at: game.created_at(),
             completed_at,
             had_bots,
         };
+
+        let inserted = if let Some(history_repository) = &self.game_history_repository {
+            history_repository
+                .record_completed_game(&game_result)
+                .await?
+        } else {
+            true
+        };
+
+        if !inserted {
+            let room_stats = self
+                .repository
+                .get_room_stats(room_id)
+                .await?
+                .unwrap_or_else(|| RoomStats {
+                    room_id: room_id.to_string(),
+                    ..RoomStats::default()
+                });
+            return Ok((game_result, room_stats));
+        }
 
         // Record game and get updated stats in one operation
         let updated_room_stats = self.repository.record_game(game_result.clone()).await?;
@@ -95,6 +122,55 @@ impl StatsService {
 
     pub async fn get_room_stats(&self, room_id: &str) -> Result<Option<RoomStats>, StatsError> {
         self.repository.get_room_stats(room_id).await
+    }
+
+    pub async fn get_player_profile_stats(
+        &self,
+        player_uuid: &str,
+        display_name: &str,
+    ) -> Result<Option<super::PlayerProfileStatsResponse>, StatsError> {
+        match &self.game_history_repository {
+            Some(repository) => {
+                repository
+                    .get_player_profile_stats(player_uuid, display_name)
+                    .await
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub async fn get_recent_games_for_player(
+        &self,
+        player_uuid: &str,
+        limit: u32,
+        before: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<super::PlayerRecentGamesResponse, StatsError> {
+        match &self.game_history_repository {
+            Some(repository) => {
+                repository
+                    .get_recent_games_for_player(player_uuid, limit, before)
+                    .await
+            }
+            None => Ok(super::PlayerRecentGamesResponse {
+                games: vec![],
+                next_before: None,
+            }),
+        }
+    }
+
+    pub async fn get_completed_game_for_player(
+        &self,
+        player_uuid: &str,
+        game_id: &str,
+    ) -> Result<Option<super::CompletedGameDetailResponse>, StatsError> {
+        match &self.game_history_repository {
+            Some(repository) => {
+                repository
+                    .get_completed_game_for_player(player_uuid, game_id)
+                    .await
+            }
+            None => Ok(None),
+        }
     }
 
     pub async fn reset_room_stats(&self, room_id: &str) -> Result<(), StatsError> {
@@ -123,17 +199,26 @@ impl StatsService {
                 .iter()
                 .map(|(uuid, cards)| PlayerGameResult {
                     uuid: uuid.clone(),
+                    won: uuid == winner_uuid,
                     cards_remaining: *cards as u8,
                     raw_score: current_scores.get(uuid).copied().unwrap_or_default(),
                     final_score: current_scores.get(uuid).copied().unwrap_or_default(),
+                    turns_taken: 0,
+                    passes: 0,
+                    plays: 0,
+                    cards_played: 0,
+                    started_first: false,
                 })
                 .collect();
 
             let snapshot = GameResult {
+                game_id: format!("{room_id}:{game_number}"),
                 room_id: room_id.to_string(),
                 game_number,
                 winner_uuid: winner_uuid.to_string(),
                 players: snapshot_players,
+                moves: vec![],
+                started_at: completed_at,
                 completed_at,
                 had_bots,
             };
@@ -205,12 +290,60 @@ impl StatsService {
             false
         }
     }
+
+    fn build_player_results(
+        &self,
+        game: &Game,
+        winner_uuid: &str,
+        raw_scores: &HashMap<String, i32>,
+        final_scores: &HashMap<String, i32>,
+    ) -> Vec<PlayerGameResult> {
+        game.players()
+            .iter()
+            .enumerate()
+            .map(|(index, player)| {
+                let mut turns_taken = 0_u32;
+                let mut passes = 0_u32;
+                let mut plays = 0_u32;
+                let mut cards_played = 0_u32;
+
+                for mv in game
+                    .move_log()
+                    .iter()
+                    .filter(|mv| mv.player_uuid == player.uuid)
+                {
+                    turns_taken += 1;
+                    match mv.action {
+                        crate::game::MoveAction::Pass => passes += 1,
+                        crate::game::MoveAction::Play => {
+                            plays += 1;
+                            cards_played += mv.cards.len() as u32;
+                        }
+                    }
+                }
+
+                PlayerGameResult {
+                    uuid: player.uuid.clone(),
+                    won: player.uuid == winner_uuid,
+                    cards_remaining: player.cards.len() as u8,
+                    raw_score: raw_scores.get(&player.uuid).copied().unwrap_or_default(),
+                    final_score: final_scores.get(&player.uuid).copied().unwrap_or_default(),
+                    turns_taken,
+                    passes,
+                    plays,
+                    cards_played,
+                    started_first: index == 0,
+                }
+            })
+            .collect()
+    }
 }
 
 pub struct StatsServiceBuilder {
     collectors: Vec<Arc<dyn StatCollector>>,
     calculators: Vec<Arc<dyn ScoreCalculator>>,
     repository: Arc<dyn StatsRepository>,
+    game_history_repository: Option<Arc<dyn GameHistoryRepository>>,
     bot_manager: Option<Arc<BotManager>>,
 }
 
@@ -226,6 +359,7 @@ impl StatsServiceBuilder {
                 Arc::new(TenPlusMultiplierCalculator::new()),
             ],
             repository,
+            game_history_repository: None,
             bot_manager: None,
         }
     }
@@ -247,12 +381,21 @@ impl StatsServiceBuilder {
         self
     }
 
+    pub fn with_game_history_repository(
+        mut self,
+        game_history_repository: Arc<dyn GameHistoryRepository>,
+    ) -> Self {
+        self.game_history_repository = Some(game_history_repository);
+        self
+    }
+
     pub fn build(mut self) -> StatsService {
         self.calculators.sort_by_key(|c| c.priority());
         StatsService {
             collectors: self.collectors,
             calculators: self.calculators,
             repository: self.repository,
+            game_history_repository: self.game_history_repository,
             bot_manager: self.bot_manager,
             room_mutexes: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -341,7 +484,7 @@ mod tests {
     use crate::{
         bot::BotManager,
         game::{Card, Game},
-        stats::InMemoryStatsRepository,
+        stats::{InMemoryGameHistoryRepository, InMemoryStatsRepository},
     };
     use tokio::sync::Mutex;
 
@@ -431,6 +574,84 @@ mod tests {
             .unwrap();
         assert!(alice.raw_score > 0);
         assert!(alice.final_score >= alice.raw_score);
+    }
+
+    #[tokio::test]
+    async fn process_completed_game_captures_moves_and_player_behavior_metrics() {
+        let repo = Arc::new(InMemoryStatsRepository::new());
+        let service = StatsService::builder(repo).build();
+
+        let mut game = game_with_players(vec![
+            (
+                "Alice".to_string(),
+                "alice".to_string(),
+                vec![card("3D"), card("4D")],
+            ),
+            (
+                "Bob".to_string(),
+                "bob".to_string(),
+                vec![card("5H"), card("6H")],
+            ),
+        ]);
+
+        game.play_cards("alice", &[card("3D")]).unwrap();
+        game.play_cards("bob", &[]).unwrap();
+        game.play_cards("alice", &[card("4D")]).unwrap();
+
+        let (game_result, _) = service
+            .process_completed_game("room", &game, "alice")
+            .await
+            .unwrap();
+
+        assert_eq!(game_result.moves.len(), 3);
+        let alice = game_result
+            .players
+            .iter()
+            .find(|player| player.uuid == "alice")
+            .unwrap();
+        assert!(alice.won);
+        assert_eq!(alice.turns_taken, 2);
+        assert_eq!(alice.passes, 0);
+        assert_eq!(alice.plays, 2);
+        assert_eq!(alice.cards_played, 2);
+        assert!(alice.started_first);
+
+        let bob = game_result
+            .players
+            .iter()
+            .find(|player| player.uuid == "bob")
+            .unwrap();
+        assert!(!bob.won);
+        assert_eq!(bob.turns_taken, 1);
+        assert_eq!(bob.passes, 1);
+        assert_eq!(bob.plays, 0);
+        assert_eq!(bob.cards_played, 0);
+    }
+
+    #[tokio::test]
+    async fn duplicate_completed_game_does_not_double_count_room_stats() {
+        let repo = Arc::new(InMemoryStatsRepository::new());
+        let history_repo = Arc::new(InMemoryGameHistoryRepository::new());
+        let service = StatsService::builder(repo.clone())
+            .with_game_history_repository(history_repo)
+            .build();
+
+        let game = game_with_players(vec![
+            ("Alice".to_string(), "alice".to_string(), vec![card("3D")]),
+            ("Bob".to_string(), "bob".to_string(), vec![card("4H")]),
+        ]);
+
+        let (_, room_stats) = service
+            .process_completed_game("room", &game, "alice")
+            .await
+            .unwrap();
+        assert_eq!(room_stats.games_played, 1);
+
+        let (_, room_stats) = service
+            .process_completed_game("room", &game, "alice")
+            .await
+            .unwrap();
+        assert_eq!(room_stats.games_played, 1);
     }
 
     #[tokio::test]

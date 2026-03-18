@@ -1,6 +1,7 @@
 mod bot;
 mod event;
 mod game;
+mod player;
 mod room;
 mod session;
 mod shared;
@@ -27,7 +28,10 @@ use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::bot::BotManager;
-use crate::stats::{service::StatsService, InMemoryStatsRepository};
+use crate::stats::{
+    service::StatsService, InMemoryGameHistoryRepository, InMemoryStatsRepository,
+    PostgresGameHistoryRepository,
+};
 use crate::websockets::InMemoryConnectionManager;
 use crate::{
     event::EventBus, game::GameService, user::mapping_service::InMemoryPlayerMappingService,
@@ -56,28 +60,32 @@ async fn main() {
 
     // Create shared application state with dependency injection
     // Smart configuration: Use PostgreSQL if DATABASE_URL is set, otherwise in-memory
-    let session_repository: Arc<dyn SessionRepository + Send + Sync> =
-        match std::env::var("DATABASE_URL") {
-            Ok(database_url) => {
-                info!("Using PostgreSQL session storage (persistent across restarts)");
-                match sqlx::PgPool::connect(&database_url).await {
-                    Ok(pool) => {
-                        info!("✅ Connected to PostgreSQL successfully");
-                        Arc::new(PostgresSessionRepository::new(pool))
-                    }
-                    Err(e) => {
-                        warn!("❌ Failed to connect to PostgreSQL: {}", e);
-                        info!("🔄 Falling back to in-memory session storage");
-                        Arc::new(InMemorySessionRepository::new())
-                    }
-                }
+    let postgres_pool = match std::env::var("DATABASE_URL") {
+        Ok(database_url) => match sqlx::PgPool::connect(&database_url).await {
+            Ok(pool) => {
+                info!("✅ Connected to PostgreSQL successfully");
+                Some(pool)
             }
             Err(e) => {
-                info!("Error getting DATABASE_URL: {}", e);
-                info!("Using in-memory session storage (sessions lost on restart)");
-                info!("💡 Set DATABASE_URL to use PostgreSQL for persistent sessions");
-                Arc::new(InMemorySessionRepository::new())
+                warn!("❌ Failed to connect to PostgreSQL: {}", e);
+                None
             }
+        },
+        Err(e) => {
+            info!("Error getting DATABASE_URL: {}", e);
+            info!("Using in-memory session storage (sessions lost on restart)");
+            info!("💡 Set DATABASE_URL to use PostgreSQL for persistent sessions");
+            None
+        }
+    };
+
+    let session_repository: Arc<dyn SessionRepository + Send + Sync> =
+        if let Some(pool) = &postgres_pool {
+            info!("Using PostgreSQL session storage (persistent across restarts)");
+            Arc::new(PostgresSessionRepository::new(pool.clone()))
+        } else {
+            info!("🔄 Falling back to in-memory session storage");
+            Arc::new(InMemorySessionRepository::new())
         };
 
     let player_mapping = Arc::new(InMemoryPlayerMappingService::new());
@@ -94,11 +102,19 @@ async fn main() {
     // Stats system: in-memory tracking of per-room game statistics
     info!("📊 Stats tracking enabled (in-memory)");
     let stats_repository = Arc::new(InMemoryStatsRepository::new());
-    let stats_service = Arc::new(
-        StatsService::builder(stats_repository.clone())
-            .with_bot_manager(bot_manager.clone())
-            .build(),
-    );
+    let mut stats_service_builder =
+        StatsService::builder(stats_repository.clone()).with_bot_manager(bot_manager.clone());
+    if let Some(pool) = &postgres_pool {
+        info!("🗂️ Completed game history persistence enabled (PostgreSQL)");
+        stats_service_builder = stats_service_builder.with_game_history_repository(Arc::new(
+            PostgresGameHistoryRepository::new(pool.clone()),
+        ));
+    } else {
+        info!("🗂️ Completed game history persistence enabled (in-memory)");
+        stats_service_builder = stats_service_builder
+            .with_game_history_repository(Arc::new(InMemoryGameHistoryRepository::new()));
+    }
+    let stats_service = Arc::new(stats_service_builder.build());
     // Create RoomService focused purely on business logic
     let room_service = Arc::new(RoomService::new(room_repository.clone()));
 
@@ -169,6 +185,27 @@ async fn main() {
         .route("/", get(|| async { "Hello, World!" }))
         .route("/health", get(|| async { "OK" }))
         .route("/online", get(session::get_online_count))
+        .route(
+            "/player/me/stats",
+            get(player::get_my_stats).layer(middleware::from_fn_with_state(
+                app_state.clone(),
+                session::jwt_auth,
+            )),
+        )
+        .route(
+            "/player/me/games",
+            get(player::get_my_recent_games).layer(middleware::from_fn_with_state(
+                app_state.clone(),
+                session::jwt_auth,
+            )),
+        )
+        .route(
+            "/games/:game_id",
+            get(player::get_completed_game).layer(middleware::from_fn_with_state(
+                app_state.clone(),
+                session::jwt_auth,
+            )),
+        )
         .route("/session", post(session::create_session))
         .route(
             "/session/validate",

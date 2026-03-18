@@ -66,10 +66,13 @@ mod tests {
 
     fn sample_game() -> GameResult {
         GameResult {
+            game_id: "room:1".into(),
             room_id: "room".into(),
             game_number: 1,
             winner_uuid: "winner".into(),
             players: vec![],
+            moves: vec![],
+            started_at: Utc::now(),
             completed_at: Utc::now(),
             had_bots: false,
         }

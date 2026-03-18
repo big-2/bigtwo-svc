@@ -2,6 +2,7 @@
 
 // The game structure will be passed around to different handlers that can update the state of the game
 use crate::game::cards::{Card, Hand, HandError, Rank, Suit};
+use chrono::{DateTime, Utc};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 
@@ -9,6 +10,20 @@ use serde::{Deserialize, Serialize};
 pub struct Player {
     pub name: String, // For external compatibility
     pub uuid: String, // For internal identification
+    pub cards: Vec<Card>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum MoveAction {
+    Pass,
+    Play,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MoveRecord {
+    pub sequence: u32,
+    pub player_uuid: String,
+    pub action: MoveAction,
     pub cards: Vec<Card>,
 }
 
@@ -31,12 +46,14 @@ pub enum GameError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Game {
     id: String,
+    created_at: DateTime<Utc>,
     players: Vec<Player>, // The first player in the list is assumed to be the starting player
     current_turn: usize,  // The index of the player who is to act
     consecutive_passes: usize,
     played_hands: Vec<Hand>,
     starting_hands: std::collections::HashMap<String, Vec<Card>>, // Player name -> starting cards
     last_play_by_player: std::collections::HashMap<String, Vec<Card>>, // Player UUID -> last played cards
+    move_log: Vec<MoveRecord>,
 }
 
 impl Game {
@@ -50,12 +67,14 @@ impl Game {
     ) -> Self {
         Self {
             id,
+            created_at: Utc::now(),
             players,
             current_turn,
             consecutive_passes,
             played_hands,
             starting_hands,
             last_play_by_player: std::collections::HashMap::new(),
+            move_log: Vec::new(),
         }
     }
 
@@ -141,6 +160,7 @@ impl Game {
         // Track the pass for this player (empty vec indicates pass)
         let player_uuid = self.players[self.current_turn].uuid.clone();
         self.last_play_by_player.insert(player_uuid, vec![]);
+        self.record_move(MoveAction::Pass, vec![]);
 
         self.consecutive_passes += 1;
         self.played_hands.push(Hand::Pass);
@@ -206,6 +226,7 @@ impl Game {
         }
 
         self.last_play_by_player.insert(player_uuid, cards.to_vec());
+        self.record_move(MoveAction::Play, cards.to_vec());
 
         // Remove played cards from the player's hand
         let current_player = &mut self.players[self.current_turn];
@@ -224,6 +245,25 @@ impl Game {
 
     fn advance_turn(&mut self) {
         self.current_turn = (self.current_turn + 1) % self.players.len();
+    }
+
+    fn record_move(&mut self, action: MoveAction, cards: Vec<Card>) {
+        let sequence = self.move_log.len() as u32 + 1;
+        let player_uuid = self.players[self.current_turn].uuid.clone();
+        self.move_log.push(MoveRecord {
+            sequence,
+            player_uuid,
+            action,
+            cards,
+        });
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn created_at(&self) -> DateTime<Utc> {
+        self.created_at
     }
 
     pub fn players(&self) -> &Vec<Player> {
@@ -306,11 +346,15 @@ impl Game {
     pub fn last_plays_by_player(&self) -> &std::collections::HashMap<String, Vec<Card>> {
         &self.last_play_by_player
     }
+
+    pub fn move_log(&self) -> &[MoveRecord] {
+        &self.move_log
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Card, Game, GameError, Hand, Player, Rank, Suit};
+    use super::{Card, Game, GameError, Hand, MoveAction, Player, Rank, Suit};
 
     #[test]
     fn test_new_game() {
@@ -1347,5 +1391,53 @@ mod tests {
         );
         assert_eq!(last_plays.get("bob-uuid"), Some(&vec![])); // Still empty for pass
         assert_eq!(last_plays.get("charlie-uuid"), Some(&vec![])); // Still empty for pass
+    }
+
+    #[test]
+    fn test_move_log_tracks_play_and_pass_order() {
+        let players = vec![
+            Player {
+                name: "Alice".to_string(),
+                uuid: "alice-uuid".to_string(),
+                cards: vec![
+                    Card::new(Rank::Three, Suit::Diamonds),
+                    Card::new(Rank::Four, Suit::Hearts),
+                ],
+            },
+            Player {
+                name: "Bob".to_string(),
+                uuid: "bob-uuid".to_string(),
+                cards: vec![
+                    Card::new(Rank::Five, Suit::Clubs),
+                    Card::new(Rank::Six, Suit::Spades),
+                ],
+            },
+        ];
+
+        let mut game = Game::new(
+            "test".to_string(),
+            players.clone(),
+            0,
+            0,
+            vec![],
+            players
+                .iter()
+                .map(|player| (player.uuid.clone(), player.cards.clone()))
+                .collect(),
+        );
+
+        game.play_cards("alice-uuid", &[Card::new(Rank::Three, Suit::Diamonds)])
+            .unwrap();
+        game.play_cards("bob-uuid", &[]).unwrap();
+
+        let moves = game.move_log();
+        assert_eq!(moves.len(), 2);
+        assert_eq!(moves[0].sequence, 1);
+        assert_eq!(moves[0].player_uuid, "alice-uuid");
+        assert_eq!(moves[0].action, MoveAction::Play);
+        assert_eq!(moves[1].sequence, 2);
+        assert_eq!(moves[1].player_uuid, "bob-uuid");
+        assert_eq!(moves[1].action, MoveAction::Pass);
+        assert!(moves[1].cards.is_empty());
     }
 }

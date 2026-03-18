@@ -2,9 +2,10 @@
 #[allow(unused_imports)] // Used by integration tests
 pub use cards::SingleHand;
 pub use cards::{Card, Hand, Rank, Suit};
-pub use core::Game;
 #[allow(unused_imports)] // Used by integration tests
 pub use core::Player;
+#[allow(unused_imports)] // Public re-export for downstream consumers
+pub use core::{Game, MoveAction, MoveRecord};
 pub use game_room_subscriber::GameEventRoomSubscriber;
 pub use service::GameService;
 
