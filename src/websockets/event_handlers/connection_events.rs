@@ -164,11 +164,13 @@ impl ConnectionEventHandlers {
             .await;
 
             let bot_uuids = self.bot_manager.get_bot_uuids_in_room(room_id).await;
+            let bot_difficulties = self.bot_manager.get_bot_difficulties_in_room(room_id).await;
 
             let ws_message = WebSocketMessage::players_list(
                 room.get_player_uuids().clone(),
                 mapping,
                 bot_uuids,
+                bot_difficulties,
                 room.get_ready_players().clone(),
                 room.host_uuid.clone(),
                 room.get_connected_players().clone(),
@@ -224,11 +226,13 @@ impl ConnectionEventHandlers {
             .await;
 
             let bot_uuids = self.bot_manager.get_bot_uuids_in_room(room_id).await;
+            let bot_difficulties = self.bot_manager.get_bot_difficulties_in_room(room_id).await;
 
             let ws_message = WebSocketMessage::players_list(
                 room.get_player_uuids().clone(),
                 mapping,
                 bot_uuids,
+                bot_difficulties,
                 room.get_ready_players().clone(),
                 room.host_uuid.clone(),
                 room.get_connected_players().clone(),

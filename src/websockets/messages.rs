@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::bot::types::BotDifficulty;
+
 /// Message types for WebSocket communication
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -64,6 +66,8 @@ pub struct PlayersListPayload {
     pub mapping: std::collections::HashMap<String, String>,
     /// UUIDs of bot players in the room
     pub bot_uuids: Vec<String>,
+    /// Bot difficulty keyed by bot UUID so clients can render bot state without inference
+    pub bot_difficulties: std::collections::HashMap<String, BotDifficulty>,
     /// UUIDs of players who are ready
     pub ready_players: Vec<String>,
     /// UUID of the current host
@@ -114,6 +118,7 @@ pub struct GameWonPayload {
 pub struct BotAddedPayload {
     pub bot_uuid: String,
     pub bot_name: String,
+    pub bot_difficulty: BotDifficulty,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -144,6 +149,7 @@ impl WebSocketMessage {
         players: Vec<String>,
         mapping: std::collections::HashMap<String, String>,
         bot_uuids: Vec<String>,
+        bot_difficulties: std::collections::HashMap<String, BotDifficulty>,
         ready_players: Vec<String>,
         host_uuid: Option<String>,
         connected_players: Vec<String>,
@@ -152,6 +158,7 @@ impl WebSocketMessage {
             players,
             mapping,
             bot_uuids,
+            bot_difficulties,
             ready_players,
             host_uuid,
             connected_players,
@@ -246,8 +253,12 @@ impl WebSocketMessage {
     }
 
     /// Create a BOT_ADDED message
-    pub fn bot_added(bot_uuid: String, bot_name: String) -> Self {
-        let payload = BotAddedPayload { bot_uuid, bot_name };
+    pub fn bot_added(bot_uuid: String, bot_name: String, bot_difficulty: BotDifficulty) -> Self {
+        let payload = BotAddedPayload {
+            bot_uuid,
+            bot_name,
+            bot_difficulty,
+        };
         Self::new(
             MessageType::BotAdded,
             serde_json::to_value(payload).unwrap(),
@@ -291,6 +302,7 @@ mod tests {
             vec!["u1".to_string()],
             map.clone(),
             vec![],
+            std::collections::HashMap::new(),
             vec![],
             Some("host-uuid".to_string()),
             vec!["u1".to_string()],
@@ -342,7 +354,11 @@ mod tests {
         assert!(matches!(gw.message_type, MessageType::GameWon));
 
         // bot_added
-        let ba = WebSocketMessage::bot_added("bot-123".to_string(), "Bot 1".to_string());
+        let ba = WebSocketMessage::bot_added(
+            "bot-123".to_string(),
+            "Bot 1".to_string(),
+            BotDifficulty::Ai,
+        );
         assert!(matches!(ba.message_type, MessageType::BotAdded));
 
         // bot_removed

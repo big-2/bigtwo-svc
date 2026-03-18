@@ -309,11 +309,16 @@ async fn handle_websocket_connection(
         }
 
         let bot_uuids = app_state.bot_manager.get_bot_uuids_in_room(&room_id).await;
+        let bot_difficulties = app_state
+            .bot_manager
+            .get_bot_difficulties_in_room(&room_id)
+            .await;
 
         let initial_message = crate::websockets::messages::WebSocketMessage::players_list(
             room.get_player_uuids().clone(),
             mapping,
             bot_uuids,
+            bot_difficulties,
             room.get_ready_players().clone(),
             room.host_uuid.clone(),
             room.get_connected_players().clone(),
