@@ -95,6 +95,18 @@ impl BotManager {
             .collect()
     }
 
+    /// Get bot difficulties in a room keyed by bot UUID for client state rendering.
+    pub async fn get_bot_difficulties_in_room(
+        &self,
+        room_id: &str,
+    ) -> HashMap<String, BotDifficulty> {
+        let bots = self.bots.read().await;
+        bots.values()
+            .filter(|bot| bot.room_id == room_id)
+            .map(|bot| (bot.uuid.clone(), bot.difficulty))
+            .collect()
+    }
+
     /// Remove all bots from a room (called when room is deleted)
     pub async fn remove_all_bots_in_room(&self, room_id: &str) -> Result<(), AppError> {
         info!(room_id = %room_id, "Removing all bots from room");
