@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use std::sync::Arc;
-use tracing::info;
+use tracing::debug;
 
 use crate::{
     event::{RoomEvent, RoomEventError, RoomEventHandler},
@@ -35,7 +35,7 @@ impl RoomEventHandler for WebSocketRoomSubscriber {
         room_id: &str,
         event: RoomEvent,
     ) -> Result<(), RoomEventError> {
-        info!(
+        debug!(
             room_id = %room_id,
             event = ?event,
             "Handling room event for WebSocket connections"
@@ -125,7 +125,7 @@ impl RoomEventHandler for WebSocketRoomSubscriber {
                 let room = match self.room_handlers.room_service.get_room(room_id).await {
                     Ok(Some(room)) => room,
                     Ok(None) => {
-                        info!(room_id = %room_id, "Room not found for stats broadcast");
+                        debug!(room_id = %room_id, "Room not found for stats broadcast");
                         return Ok(());
                     }
                     Err(e) => {
@@ -144,7 +144,7 @@ impl RoomEventHandler for WebSocketRoomSubscriber {
                 )
                 .await?;
 
-                info!(
+                debug!(
                     room_id = %room_id,
                     players_notified = room.get_player_uuids().len(),
                     "Stats update notification sent to all players"
@@ -162,7 +162,7 @@ impl RoomEventHandler for WebSocketRoomSubscriber {
                         .send_to_player(&player, &message_json)
                         .await;
 
-                    info!(
+                    debug!(
                         room_id = %room_id,
                         player = %player,
                         "Sent HEARTBEAT_ACK to player"
@@ -172,7 +172,7 @@ impl RoomEventHandler for WebSocketRoomSubscriber {
                 Ok(())
             }
             _ => {
-                info!(
+                debug!(
                     room_id = %room_id,
                     event = ?event,
                     "Unhandled event type in WebSocketRoomSubscriber"

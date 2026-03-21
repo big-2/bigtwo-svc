@@ -206,7 +206,7 @@ impl RoomRepository for InMemoryRoomRepository {
         room_id: &str,
         player_uuid: &str,
     ) -> Result<LeaveRoomResult, AppError> {
-        info!(
+        debug!(
             room_id = %room_id,
             player_uuid = %player_uuid,
             "Attempting to leave room atomically with UUID"
@@ -218,14 +218,14 @@ impl RoomRepository for InMemoryRoomRepository {
         let room = match rooms.get_mut(room_id) {
             Some(room) => room,
             None => {
-                info!(room_id = %room_id, "Room not found");
+                debug!(room_id = %room_id, "Room not found");
                 return Ok(LeaveRoomResult::RoomNotFound);
             }
         };
 
         // Check if player is in the room (by either username or UUID)
         if !room.has_player(player_uuid) {
-            info!(
+            debug!(
                 room_id = %room_id,
                 player_uuid = %player_uuid,
                 "Player not in room"
@@ -310,7 +310,7 @@ impl RoomRepository for InMemoryRoomRepository {
 
         room.toggle_ready(player_uuid);
 
-        info!(
+        debug!(
             room_id = %room_id,
             player_uuid = %player_uuid,
             is_ready = room.is_ready(player_uuid),
@@ -343,7 +343,7 @@ impl RoomRepository for InMemoryRoomRepository {
 
         room.set_ready(player_uuid, is_ready);
 
-        info!(
+        debug!(
             room_id = %room_id,
             player_uuid = %player_uuid,
             is_ready = is_ready,
@@ -366,7 +366,7 @@ impl RoomRepository for InMemoryRoomRepository {
 
         room.clear_ready_states();
 
-        info!(room_id = %room_id, "All ready states cleared");
+        debug!(room_id = %room_id, "All ready states cleared");
 
         Ok(())
     }
@@ -451,7 +451,7 @@ impl RoomRepository for InMemoryRoomRepository {
             .map(|room| room.id.clone())
             .collect();
 
-        info!(
+        debug!(
             count = inactive_room_ids.len(),
             threshold = %threshold,
             "Found inactive rooms"
@@ -467,7 +467,7 @@ impl RoomRepository for InMemoryRoomRepository {
         let mut rooms = self.rooms.lock().unwrap();
 
         if rooms.remove(room_id).is_some() {
-            info!(room_id = %room_id, "Room deleted successfully");
+            debug!(room_id = %room_id, "Room deleted successfully");
             Ok(())
         } else {
             warn!(room_id = %room_id, "Room not found when attempting to delete");

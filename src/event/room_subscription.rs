@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use tokio::task::JoinHandle;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 use super::{bus::EventBus, room_handler::RoomEventHandler};
 
@@ -26,7 +26,7 @@ impl RoomSubscription {
         let room_id = self.room_id.clone();
         let handler_name = self.handler.handler_name();
 
-        info!(
+        debug!(
             room_id = %room_id,
             handler = handler_name,
             "Starting room subscription"
@@ -35,14 +35,14 @@ impl RoomSubscription {
         let mut receiver = self.event_bus.subscribe_to_room(&room_id).await;
 
         tokio::spawn(async move {
-            info!(
+            debug!(
                 room_id = %room_id,
                 handler = handler_name,
                 "Room subscription task started"
             );
 
             while let Ok(event) = receiver.recv().await {
-                info!(
+                debug!(
                     room_id = %room_id,
                     handler = handler_name,
                     event = ?event,
@@ -50,7 +50,7 @@ impl RoomSubscription {
                 );
 
                 if let Err(e) = self.handler.handle_room_event(&room_id, event).await {
-                    info!(
+                    warn!(
                         room_id = %room_id,
                         handler = handler_name,
                         error = %e,

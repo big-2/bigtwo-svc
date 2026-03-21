@@ -49,9 +49,9 @@ impl ConnectionManager for InMemoryConnectionManager {
         if let Some(existing_sender) = connections.insert(uuid.clone(), sender) {
             // Drop the existing sender to close the connection
             drop(existing_sender);
-            tracing::info!(uuid = %uuid, "Replaced existing WebSocket connection");
+            tracing::debug!(uuid = %uuid, "Replaced existing WebSocket connection");
         } else {
-            tracing::info!(uuid = %uuid, "Added new WebSocket connection");
+            tracing::debug!(uuid = %uuid, "Added new WebSocket connection");
         }
     }
 

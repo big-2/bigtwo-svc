@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, instrument, warn};
+use tracing::{debug, instrument, warn};
 
 use super::{
     creator::{SessionCreationConfig, SessionCreator},
@@ -53,11 +53,11 @@ impl SessionService {
     /// Creates a new session with a generated username and JWT token
     #[instrument(skip(self))]
     pub async fn create_session(&self) -> Result<SessionResponse, AppError> {
-        info!("Starting session creation");
+        debug!("Starting session creation");
 
         match self.session_creator.create_session().await {
             Ok(creation_result) => {
-                info!("Session creation completed successfully");
+                debug!("Session creation completed successfully");
                 Ok(creation_result.session_response)
             }
             Err(error) => {
@@ -70,11 +70,11 @@ impl SessionService {
     /// Validates a session token and returns the claims if valid
     #[instrument(skip(self, token))]
     pub async fn validate_session(&self, token: &str) -> Result<SessionClaims, AppError> {
-        info!(token = %token, "Validating session token");
+        debug!("Validating session token");
 
         // First validate JWT token structure and signature
         let claims = self.token_config.validate_token(token)?;
-        info!(
+        debug!(
             username = %claims.username,
             session_id = %claims.session_id,
             "JWT token structure validated"
@@ -91,7 +91,7 @@ impl SessionService {
                     return Err(AppError::Unauthorized("Session has expired".to_string()));
                 }
 
-                info!(
+                debug!(
                     username = %claims.username,
                     session_id = %claims.session_id,
                     "Session validated successfully against database"
@@ -114,7 +114,7 @@ impl SessionService {
     /// Revokes a session by removing it from the database
     #[instrument(skip(self))]
     pub async fn revoke_session(&self, session_id: &str) -> Result<(), AppError> {
-        info!(session_id = %session_id, "Revoking session");
+        debug!(session_id = %session_id, "Revoking session");
 
         // Get player UUID before deletion for cleanup
         let player_uuid = {
@@ -134,21 +134,21 @@ impl SessionService {
         // Clean up player UUID → playername mapping
         if let Some(uuid) = player_uuid {
             self.player_mapping.remove_player(&uuid).await;
-            info!(
+            debug!(
                 session_id = %session_id,
                 player_uuid = %uuid,
                 "Cleaned up player mappings"
             );
         }
 
-        info!(session_id = %session_id, "Session revoked successfully");
+        debug!(session_id = %session_id, "Session revoked successfully");
         Ok(())
     }
 
     /// Extends a session's expiration time
     #[instrument(skip(self))]
     pub async fn extend_session(&self, session_id: &str) -> Result<(), AppError> {
-        info!(session_id = %session_id, "Extending session expiration");
+        debug!(session_id = %session_id, "Extending session expiration");
 
         let mut session = self
             .repository
@@ -159,18 +159,18 @@ impl SessionService {
         session.extend_expiration(self.token_config.expiration_days);
         self.repository.update_session(&session).await?;
 
-        info!(session_id = %session_id, "Session expiration extended successfully");
+        debug!(session_id = %session_id, "Session expiration extended successfully");
         Ok(())
     }
 
     /// Cleans up expired sessions from the database
     #[instrument(skip(self))]
     pub async fn cleanup_expired_sessions(&self) -> Result<u64, AppError> {
-        info!("Starting cleanup of expired sessions");
+        debug!("Starting cleanup of expired sessions");
 
         let removed_count = self.repository.cleanup_expired_sessions().await?;
 
-        info!(
+        debug!(
             removed_sessions = removed_count,
             "Expired sessions cleanup completed"
         );

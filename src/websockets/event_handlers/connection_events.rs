@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use tracing::info;
+use tracing::debug;
 
 use crate::websockets::event_handlers::shared::{MessageBroadcaster, PlayerMappingUtils};
 use crate::{
@@ -41,7 +41,7 @@ impl ConnectionEventHandlers {
         room_id: &str,
         player_uuid: &str,
     ) -> Result<(), RoomEventError> {
-        info!(
+        debug!(
             room_id = %room_id,
             player_uuid = %player_uuid,
             "Processing leave request"
@@ -85,14 +85,14 @@ impl ConnectionEventHandlers {
                         .await;
                 }
 
-                info!(
+                debug!(
                     room_id = %room_id,
                     player_uuid = %player_uuid,
                     "Leave request processed successfully"
                 );
             }
             Ok(LeaveRoomResult::RoomDeleted) => {
-                info!(
+                debug!(
                     room_id = %room_id,
                     player_uuid = %player_uuid,
                     "Room deleted after player left, cleaning up bots"
@@ -103,7 +103,7 @@ impl ConnectionEventHandlers {
 
                 // Clean up all bots in the room
                 if let Err(e) = self.bot_manager.remove_all_bots_in_room(room_id).await {
-                    info!(
+                    debug!(
                         room_id = %room_id,
                         error = %e,
                         "Failed to clean up bots, but room is already deleted"
@@ -114,7 +114,7 @@ impl ConnectionEventHandlers {
                 for bot in bots_in_room {
                     if !self.player_mapping.remove_player(&bot.uuid).await {
                         // Log but don't fail if bot mapping doesn't exist
-                        info!(
+                        debug!(
                             room_id = %room_id,
                             bot_uuid = %bot.uuid,
                             "Bot mapping not found or already removed"
@@ -123,7 +123,7 @@ impl ConnectionEventHandlers {
                 }
             }
             Ok(_) => {
-                info!(
+                debug!(
                     room_id = %room_id,
                     player_uuid = %player_uuid,
                     "Player was not in room or room not found"
@@ -145,7 +145,7 @@ impl ConnectionEventHandlers {
         room_id: &str,
         player_uuid: &str,
     ) -> Result<(), RoomEventError> {
-        info!(
+        debug!(
             room_id = %room_id,
             player_uuid = %player_uuid,
             "Processing disconnect event"
@@ -198,7 +198,7 @@ impl ConnectionEventHandlers {
         room_id: &str,
         player_uuid: &str,
     ) -> Result<(), RoomEventError> {
-        info!(
+        debug!(
             room_id = %room_id,
             player_uuid = %player_uuid,
             "Processing connect event"
