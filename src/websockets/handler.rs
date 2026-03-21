@@ -6,7 +6,7 @@ use axum::{
 };
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::event::EventBus;
 use crate::event::RoomEvent;
@@ -31,10 +31,9 @@ impl WebsocketReceiveHandler {
 #[async_trait]
 impl MessageHandler for WebsocketReceiveHandler {
     async fn handle_message(&self, username: &str, room_id: &str, message: String) {
-        info!(
+        debug!(
             username = %username,
             room_id = %room_id,
-            message = %message,
             "Received message"
         );
 
@@ -174,7 +173,7 @@ pub async fn websocket_handler(
     headers: HeaderMap,
     State(app_state): State<AppState>,
 ) -> Result<Response, AppError> {
-    info!(
+    debug!(
         room_id = %room_id,
         "WebSocket connection requested"
     );
@@ -196,7 +195,7 @@ pub async fn websocket_handler(
         .await?;
     let username = claims.username.clone();
 
-    info!(
+    debug!(
         room_id = %room_id,
         username = %username,
         "WebSocket authentication successful"
@@ -212,7 +211,7 @@ pub async fn websocket_handler(
         return Err(AppError::NotFound("Room not found".to_string()));
     }
 
-    info!(
+    debug!(
         room_id = %room_id,
         username = %username,
         "Room verified, establishing WebSocket connection"
@@ -241,7 +240,7 @@ async fn handle_websocket_connection(
     session_id: String,
     app_state: AppState,
 ) {
-    info!(
+    debug!(
         room_id = %room_id,
         username = %username,
         "WebSocket connection established"
@@ -445,7 +444,7 @@ async fn handle_websocket_connection(
     // Run the connection until disconnect
     match connection.run().await {
         Ok(()) => {
-            info!(
+            debug!(
                 room_id = %room_id,
                 username = %username,
                 "WebSocket connection closed cleanly"
@@ -491,7 +490,7 @@ async fn handle_websocket_connection(
         );
     }
 
-    info!(
+    debug!(
         room_id = %room_id,
         username = %username,
         "WebSocket disconnect event emitted"

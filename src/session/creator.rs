@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, instrument};
+use tracing::{debug, instrument};
 
 use super::{
     generators::UsernameGenerator, models::SessionModel, repository::SessionRepository,
@@ -70,21 +70,21 @@ impl SessionCreator {
     pub async fn create_session(&self) -> Result<SessionCreationResult, AppError> {
         // Step 1: Generate username
         let username = self.generate_username().await?;
-        info!(username = %username, "Generated username");
+        debug!(username = %username, "Generated username");
 
         // Step 2: Create session model (session.id will serve as player identifier)
         let session_model = self.create_session_model(username.clone()).await?;
-        info!(session_id = %session_model.id, "Created session model");
+        debug!(session_id = %session_model.id, "Created session model");
 
         // Step 3: Store session in database
         self.store_session(&session_model).await?;
-        info!(session_id = %session_model.id, "Stored session in database");
+        debug!(session_id = %session_model.id, "Stored session in database");
 
         // Step 4: Register player mapping (using session.id as player identifier)
         let mapping_cleanup_needed = self
             .register_player_mapping(&session_model.id, &username)
             .await?;
-        info!(
+        debug!(
             player_id = %session_model.id,
             username = %username,
             "Registered player mapping"
@@ -93,14 +93,14 @@ impl SessionCreator {
         // Step 5: Store session-to-player mapping (now they're the same!)
         self.store_session_mapping(&session_model.id, &session_model.id)
             .await?;
-        info!(
+        debug!(
             session_id = %session_model.id,
             "Stored session-to-player mapping"
         );
 
         // Step 6: Create JWT token
         let token = self.create_jwt_token(&session_model.id, &username).await?;
-        info!(username = %username, "Created JWT token");
+        debug!(username = %username, "Created JWT token");
 
         Ok(SessionCreationResult {
             session_response: SessionResponse {
