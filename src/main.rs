@@ -42,9 +42,8 @@ async fn main() {
     // Initialize tracing
     tracing_subscriber::registry()
         .with(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                "bigtwo=warn,bigtwo::game::game_room_subscriber=info,bigtwo::websockets::event_handlers::game_events=info,bigtwo::websockets::event_handlers::room_events=info,bigtwo::websockets::event_handlers::chat_events=info,bigtwo::bot::manager=info,bigtwo::bot::handlers=info,bigtwo::room::service=info,bigtwo::room::handlers=info,bigtwo::room::cleanup_task=info,bigtwo::main=info,tower_http=info".into()
-            }),
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "bigtwo=info,tower_http=info".into()),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
