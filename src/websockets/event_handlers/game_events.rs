@@ -277,14 +277,6 @@ impl GameEventHandlers {
             "Game won notification sent to all players"
         );
 
-        // Remove the completed game from the repository after notifying all players
-        // This ensures that on refresh/reconnect, players see the lobby instead of a completed game
-        self.game_service.remove_game(room_id).await;
-        info!(
-            room_id = %room_id,
-            "Removed completed game from repository"
-        );
-
         Ok(())
     }
 }
