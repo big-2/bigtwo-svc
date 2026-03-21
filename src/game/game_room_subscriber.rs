@@ -37,6 +37,7 @@ impl RoomEventHandler for GameEventRoomSubscriber {
             RoomEvent::GameWon {
                 winner,
                 winning_hand,
+                game: _,
             } => {
                 self.handle_game_won(room_id, &winner, &winning_hand)
                     .await?;
@@ -106,6 +107,7 @@ impl GameEventRoomSubscriber {
                     RoomEvent::GameWon {
                         winner: player_uuid.to_string(),
                         winning_hand,
+                        game: move_result.game.clone(),
                     },
                 )
                 .await;

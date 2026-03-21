@@ -100,9 +100,10 @@ impl RoomEventHandler for WebSocketRoomSubscriber {
             RoomEvent::GameWon {
                 winner,
                 winning_hand,
+                game,
             } => {
                 self.game_handlers
-                    .handle_game_won(room_id, &winner, &winning_hand)
+                    .handle_game_won(room_id, &winner, &winning_hand, game)
                     .await
             }
             RoomEvent::BotAdded { bot_uuid, bot_name } => {

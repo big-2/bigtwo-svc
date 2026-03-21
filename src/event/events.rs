@@ -41,6 +41,8 @@ pub enum RoomEvent {
         winner: String,
         /// The cards that were played in the winning move
         winning_hand: Vec<Card>,
+        /// Snapshot of the completed game state for downstream subscribers
+        game: Game,
     },
     /// A bot was added to the room
     BotAdded { bot_uuid: String, bot_name: String },

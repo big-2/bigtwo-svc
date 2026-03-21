@@ -182,7 +182,6 @@ impl TestSetupBuilder {
         // Stats subscriber to capture game results
         let stats_subscriber = StatsRoomSubscriber::new(
             Arc::clone(&stats_service),
-            Arc::clone(&game_service),
             Arc::clone(&room_service),
             event_bus.clone(),
         );

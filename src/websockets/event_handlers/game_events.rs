@@ -252,21 +252,13 @@ impl GameEventHandlers {
         room_id: &str,
         winner: &str,
         winning_hand: &[Card],
+        game: Game,
     ) -> Result<(), RoomEventError> {
         info!(
             room_id = %room_id,
             winner = %winner,
             "Handling game won event"
         );
-
-        let game =
-            self.game_service
-                .get_game(room_id)
-                .await
-                .ok_or(RoomEventError::HandlerError(format!(
-                    "Game not found for room: {}",
-                    room_id
-                )))?;
 
         let card_strings = cards_to_strings(winning_hand);
         let game_won_message = WebSocketMessage::game_won(winner.to_string(), card_strings);
