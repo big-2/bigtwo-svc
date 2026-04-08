@@ -113,11 +113,16 @@ impl GameService {
             None
         };
 
-        // Update the game in the repository
-        self.game_repository
-            .update_game(room_id, game.clone())
-            .await
-            .map_err(|_e| AppError::Internal)?;
+        if player_won {
+            // Remove the completed game immediately so queued moves cannot
+            // observe stale state and emit a second terminal event.
+            self.game_repository.remove_game(room_id).await;
+        } else {
+            self.game_repository
+                .update_game(room_id, game.clone())
+                .await
+                .map_err(|_e| AppError::Internal)?;
+        }
 
         Ok(MoveResult {
             game,
@@ -394,5 +399,9 @@ mod tests {
         assert!(move_result.winning_hand.is_some());
         let captured_winning_hand = move_result.winning_hand.unwrap();
         assert_eq!(captured_winning_hand, winning_cards);
+
+        // Winning moves should immediately remove the live game so
+        // queued post-win moves cannot generate duplicate terminal events.
+        assert!(service.get_game("test_room").await.is_none());
     }
 }

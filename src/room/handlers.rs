@@ -94,7 +94,6 @@ pub async fn create_room(
     // Set up stats subscription for this room
     let stats_subscriber = Arc::new(StatsRoomSubscriber::new(
         Arc::clone(&state.stats_service),
-        Arc::clone(&state.game_service),
         Arc::clone(&state.room_service),
         state.event_bus.clone(),
     ));

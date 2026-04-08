@@ -6,7 +6,7 @@ use tokio::sync::{Mutex as AsyncMutex, RwLock};
 use crate::{
     bot::BotManager,
     event::{RoomEvent, RoomEventError, RoomEventHandler},
-    game::{Game, GameService},
+    game::Game,
     room::service::RoomService,
 };
 
@@ -404,7 +404,6 @@ impl StatsServiceBuilder {
 
 pub struct StatsRoomSubscriber {
     stats_service: Arc<StatsService>,
-    game_service: Arc<GameService>,
     room_service: Arc<RoomService>,
     event_bus: crate::event::EventBus,
 }
@@ -412,13 +411,11 @@ pub struct StatsRoomSubscriber {
 impl StatsRoomSubscriber {
     pub fn new(
         stats_service: Arc<StatsService>,
-        game_service: Arc<GameService>,
         room_service: Arc<RoomService>,
         event_bus: crate::event::EventBus,
     ) -> Self {
         Self {
             stats_service,
-            game_service,
             room_service,
             event_bus,
         }
@@ -433,26 +430,24 @@ impl RoomEventHandler for StatsRoomSubscriber {
         event: RoomEvent,
     ) -> Result<(), RoomEventError> {
         match event {
-            RoomEvent::GameWon { winner, .. } => {
-                if let Some(game) = self.game_service.get_game(room_id).await {
-                    let result = self
-                        .stats_service
-                        .process_completed_game(room_id, &game, &winner)
-                        .await;
-                    match result {
-                        Ok((_game_result, room_stats)) => {
-                            // Emit StatsUpdated event so WebSocket subscribers can broadcast
-                            self.event_bus
-                                .emit_to_room(room_id, RoomEvent::StatsUpdated { room_stats })
-                                .await;
-                        }
-                        Err(err) => {
-                            tracing::error!(
-                                ?err,
-                                room_id,
-                                "Failed to process game completion for stats"
-                            );
-                        }
+            RoomEvent::GameWon { winner, game, .. } => {
+                let result = self
+                    .stats_service
+                    .process_completed_game(room_id, &game, &winner)
+                    .await;
+                match result {
+                    Ok((_game_result, room_stats)) => {
+                        // Emit StatsUpdated event so WebSocket subscribers can broadcast
+                        self.event_bus
+                            .emit_to_room(room_id, RoomEvent::StatsUpdated { room_stats })
+                            .await;
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            ?err,
+                            room_id,
+                            "Failed to process game completion for stats"
+                        );
                     }
                 }
             }
