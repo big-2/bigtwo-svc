@@ -344,85 +344,30 @@ async fn handle_websocket_connection(
         )
         .await;
 
-    // If a game is active, send game hydration data to the reconnecting player
+    // If a game is active, send game hydration data to the reconnecting player.
+    // Finished games are intentionally skipped so reconnects do not re-enter
+    // a match that has already ended.
     if let Some(game) = app_state.game_service.get_game(&room_id).await {
-        // Find the reconnecting player in the game
-        if let Some(player) = game.players().iter().find(|p| p.uuid == player_uuid) {
-            // Build card counts map for all players
-            let card_counts: std::collections::HashMap<String, usize> = game
-                .players()
-                .iter()
-                .map(|p| (p.uuid.clone(), p.cards.len()))
-                .collect();
-
-            // Convert last plays by player from Card to String
-            let last_plays_by_player: std::collections::HashMap<String, Vec<String>> = game
-                .last_plays_by_player()
-                .iter()
-                .map(|(uuid, cards)| (uuid.clone(), cards.iter().map(|c| c.to_string()).collect()))
-                .collect();
-
-            let hydration_message = crate::websockets::messages::WebSocketMessage::game_started(
-                game.current_player_turn().clone(),
-                player.cards.iter().map(|card| card.to_string()).collect(),
-                game.players().iter().map(|p| p.uuid.clone()).collect(),
-                card_counts,
-                last_plays_by_player,
-            );
-
-            if let Ok(message_json) = serde_json::to_string(&hydration_message) {
-                let _ = outbound_sender.send(message_json);
-                debug!(
-                    room_id = %room_id,
-                    username = %username,
-                    "Sent game hydration GAME_STARTED to reconnecting player"
-                );
-            }
-
-            // Additionally hydrate last played cards (if any) so UI shows table state
-            let last_cards = game
-                .last_non_pass_cards()
-                .iter()
-                .map(|c| c.to_string())
-                .collect::<Vec<_>>();
-            if !last_cards.is_empty() {
-                if let Some(last_player_uuid) = game.last_non_pass_player_uuid() {
-                    // Get remaining cards for the last player who played
-                    let remaining_cards = game
-                        .players()
-                        .iter()
-                        .find(|p| p.uuid == last_player_uuid)
-                        .map(|p| p.cards.len())
-                        .unwrap_or(0);
-
-                    let move_message = crate::websockets::messages::WebSocketMessage::move_played(
-                        last_player_uuid,
-                        last_cards,
-                        remaining_cards,
-                    );
-                    if let Ok(move_json) = serde_json::to_string(&move_message) {
-                        let _ = outbound_sender.send(move_json);
-                        debug!(
-                            room_id = %room_id,
-                            username = %username,
-                            "Sent game hydration GAME_STARTED to reconnecting player"
-                        );
-                    }
-                } else {
-                    warn!(
-                        room_id = %room_id,
-                        username = %username,
-                        "Failed to serialize game hydration message"
-                    );
-                }
-            }
-        } else {
+        let hydration_messages = build_reconnect_hydration_messages(&game, &player_uuid);
+        if hydration_messages.is_empty() && !game.is_finished() {
             warn!(
                 room_id = %room_id,
                 username = %username,
                 player_uuid = %player_uuid,
                 "Reconnecting player UUID not present in active game"
             );
+        } else {
+            for hydration_message in hydration_messages {
+                if let Ok(message_json) = serde_json::to_string(&hydration_message) {
+                    let _ = outbound_sender.send(message_json);
+                    debug!(
+                        room_id = %room_id,
+                        username = %username,
+                        message_type = ?hydration_message.message_type,
+                        "Sent reconnect hydration message"
+                    );
+                }
+            }
         }
     }
 
@@ -497,10 +442,69 @@ async fn handle_websocket_connection(
     );
 }
 
+fn build_reconnect_hydration_messages(
+    game: &crate::game::Game,
+    player_uuid: &str,
+) -> Vec<WebSocketMessage> {
+    if game.is_finished() {
+        return Vec::new();
+    }
+
+    let Some(player) = game.players().iter().find(|p| p.uuid == player_uuid) else {
+        return Vec::new();
+    };
+
+    let card_counts: std::collections::HashMap<String, usize> = game
+        .players()
+        .iter()
+        .map(|p| (p.uuid.clone(), p.cards.len()))
+        .collect();
+    let last_plays_by_player: std::collections::HashMap<String, Vec<String>> = game
+        .last_plays_by_player()
+        .iter()
+        .map(|(uuid, cards)| (uuid.clone(), cards.iter().map(|c| c.to_string()).collect()))
+        .collect();
+
+    let mut messages = vec![WebSocketMessage::game_started(
+        game.current_player_turn().clone(),
+        player.cards.iter().map(|card| card.to_string()).collect(),
+        game.players().iter().map(|p| p.uuid.clone()).collect(),
+        card_counts,
+        last_plays_by_player,
+    )];
+
+    let last_cards = game
+        .last_non_pass_cards()
+        .iter()
+        .map(|c| c.to_string())
+        .collect::<Vec<_>>();
+    if !last_cards.is_empty() {
+        if let Some(last_player_uuid) = game.last_non_pass_player_uuid() {
+            let remaining_cards = game
+                .players()
+                .iter()
+                .find(|p| p.uuid == last_player_uuid)
+                .map(|p| p.cards.len())
+                .unwrap_or(0);
+
+            messages.push(WebSocketMessage::move_played(
+                last_player_uuid,
+                last_cards,
+                remaining_cards,
+            ));
+        }
+    }
+
+    messages
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::RoomEvent;
+    use crate::{
+        event::RoomEvent,
+        game::{Game, Player, Rank, Suit},
+    };
 
     #[tokio::test]
     async fn test_receive_handler_emits_events_for_chat_leave_start_move() {
@@ -564,5 +568,58 @@ mod tests {
         assert!(seen
             .iter()
             .any(|e| matches!(e, RoomEvent::TryPlayMove { .. })));
+    }
+
+    #[test]
+    fn reconnect_hydration_skips_finished_games() {
+        let game = Game::new(
+            "room-1".to_string(),
+            vec![
+                Player {
+                    name: "Alice".to_string(),
+                    uuid: "alice".to_string(),
+                    cards: vec![],
+                },
+                Player {
+                    name: "Bob".to_string(),
+                    uuid: "bob".to_string(),
+                    cards: vec![Card::new(Rank::Four, Suit::Clubs)],
+                },
+            ],
+            0,
+            0,
+            vec![],
+            std::collections::HashMap::new(),
+        );
+
+        assert!(game.is_finished());
+        assert!(build_reconnect_hydration_messages(&game, "alice").is_empty());
+    }
+
+    #[test]
+    fn reconnect_hydration_includes_active_game_snapshot() {
+        let game = Game::new(
+            "room-1".to_string(),
+            vec![
+                Player {
+                    name: "Alice".to_string(),
+                    uuid: "alice".to_string(),
+                    cards: vec![Card::new(Rank::Three, Suit::Diamonds)],
+                },
+                Player {
+                    name: "Bob".to_string(),
+                    uuid: "bob".to_string(),
+                    cards: vec![Card::new(Rank::Four, Suit::Clubs)],
+                },
+            ],
+            0,
+            0,
+            vec![],
+            std::collections::HashMap::new(),
+        );
+
+        let messages = build_reconnect_hydration_messages(&game, "alice");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].message_type, MessageType::GameStarted);
     }
 }

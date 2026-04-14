@@ -125,4 +125,20 @@ async fn stats_subscriber_records_completed_game_from_event_snapshot() {
 
     assert_eq!(room_stats.games_played, 1);
     assert_eq!(room_stats.player_stats.get(&alice_uuid).unwrap().wins, 1);
+    assert_eq!(
+        room_stats
+            .player_stats
+            .get(&alice_uuid)
+            .unwrap()
+            .cards_remaining,
+        0
+    );
+    assert_eq!(
+        room_stats
+            .player_stats
+            .get("550e8400-e29b-41d4-a716-446655440001")
+            .unwrap()
+            .cards_remaining,
+        2
+    );
 }

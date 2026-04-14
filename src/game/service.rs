@@ -113,16 +113,12 @@ impl GameService {
             None
         };
 
-        if player_won {
-            // Remove the completed game immediately so queued moves cannot
-            // observe stale state and emit a second terminal event.
-            self.game_repository.remove_game(room_id).await;
-        } else {
-            self.game_repository
-                .update_game(room_id, game.clone())
-                .await
-                .map_err(|_e| AppError::Internal)?;
-        }
+        // Keep the terminal snapshot in the repository until the GameWon
+        // broadcast completes so reconnecting clients can still hydrate.
+        self.game_repository
+            .update_game(room_id, game.clone())
+            .await
+            .map_err(|_e| AppError::Internal)?;
 
         Ok(MoveResult {
             game,
@@ -400,8 +396,19 @@ mod tests {
         let captured_winning_hand = move_result.winning_hand.unwrap();
         assert_eq!(captured_winning_hand, winning_cards);
 
-        // Winning moves should immediately remove the live game so
-        // queued post-win moves cannot generate duplicate terminal events.
-        assert!(service.get_game("test_room").await.is_none());
+        let completed_game = service
+            .get_game("test_room")
+            .await
+            .expect("completed game snapshot should remain available until broadcast cleanup");
+        assert!(completed_game.is_finished());
+
+        let stale_move = service
+            .try_play_move(
+                "test_room",
+                "bob-uuid",
+                &[Card::new(Rank::Four, Suit::Hearts)],
+            )
+            .await;
+        assert!(stale_move.is_err());
     }
 }

@@ -23,10 +23,10 @@ impl RoomModel {
 
         Self {
             id: room_id,
-            host_uuid: Some(host_uuid),
+            host_uuid: Some(host_uuid.clone()),
             status: "ONLINE".to_string(),
-            player_uuids: vec![],  // Host UUID will be added when they join
-            ready_players: vec![], // No players ready initially
+            player_uuids: vec![host_uuid], // Host counts as being in the room immediately
+            ready_players: vec![],         // No players ready initially
             connected_players: vec![],
             created_at: now,
             last_activity_at: now,

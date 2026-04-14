@@ -199,6 +199,7 @@ impl StatsService {
                 .iter()
                 .map(|(uuid, cards)| PlayerGameResult {
                     uuid: uuid.clone(),
+                    display_name: uuid.clone(),
                     won: uuid == winner_uuid,
                     cards_remaining: *cards as u8,
                     raw_score: current_scores.get(uuid).copied().unwrap_or_default(),
@@ -324,6 +325,7 @@ impl StatsService {
 
                 PlayerGameResult {
                     uuid: player.uuid.clone(),
+                    display_name: player.name.clone(),
                     won: player.uuid == winner_uuid,
                     cards_remaining: player.cards.len() as u8,
                     raw_score: raw_scores.get(&player.uuid).copied().unwrap_or_default(),

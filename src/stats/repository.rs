@@ -82,6 +82,7 @@ impl StatsRepository for InMemoryStatsRepository {
                 });
 
             player_stats.games_played += 1;
+            player_stats.cards_remaining = player_result.cards_remaining;
             player_stats.total_score += player_result.final_score;
 
             if player_result.uuid == game_result.winner_uuid {
@@ -116,14 +117,23 @@ struct InMemoryProfileAggregate {
     wins: u64,
     current_win_streak: u64,
     best_win_streak: u64,
-    total_turns: u64,
     total_passes: u64,
-    total_plays: u64,
-    total_cards_played: u64,
+    total_single_plays: u64,
+    total_pair_plays: u64,
+    total_triple_plays: u64,
+    total_five_card_plays: u64,
     human_games_played: u64,
     human_wins: u64,
     bot_games_played: u64,
     bot_wins: u64,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct PlayTypeBreakdown {
+    single_plays: u64,
+    pair_plays: u64,
+    triple_plays: u64,
+    five_card_plays: u64,
 }
 
 #[derive(Debug, Default)]
@@ -159,15 +169,21 @@ impl GameHistoryRepository for InMemoryGameHistoryRepository {
             games.insert(game_result.game_id.clone(), game_result.clone());
         }
 
+        let play_breakdown_by_player = calculate_play_type_breakdown(game_result);
         let mut aggregates = self.profile_aggregates.write().await;
         for player in &game_result.players {
             let aggregate = aggregates.entry(player.uuid.clone()).or_default();
+            let play_breakdown = play_breakdown_by_player
+                .get(&player.uuid)
+                .copied()
+                .unwrap_or_default();
             aggregate.games_played += 1;
             aggregate.wins += u64::from(player.won);
-            aggregate.total_turns += player.turns_taken as u64;
             aggregate.total_passes += player.passes as u64;
-            aggregate.total_plays += player.plays as u64;
-            aggregate.total_cards_played += player.cards_played as u64;
+            aggregate.total_single_plays += play_breakdown.single_plays;
+            aggregate.total_pair_plays += play_breakdown.pair_plays;
+            aggregate.total_triple_plays += play_breakdown.triple_plays;
+            aggregate.total_five_card_plays += play_breakdown.five_card_plays;
 
             if player.won {
                 aggregate.current_win_streak += 1;
@@ -229,12 +245,11 @@ impl GameHistoryRepository for InMemoryGameHistoryRepository {
                 best_win_streak: aggregate.best_win_streak,
             },
             play_style: PlayerPlayStyle {
-                total_turns: aggregate.total_turns,
                 total_passes: aggregate.total_passes,
-                pass_rate: ratio(aggregate.total_passes, aggregate.total_turns),
-                total_plays: aggregate.total_plays,
-                total_cards_played: aggregate.total_cards_played,
-                average_cards_per_play: ratio(aggregate.total_cards_played, aggregate.total_plays),
+                total_single_plays: aggregate.total_single_plays,
+                total_pair_plays: aggregate.total_pair_plays,
+                total_triple_plays: aggregate.total_triple_plays,
+                total_five_card_plays: aggregate.total_five_card_plays,
             },
             splits: PlayerStatsSplits {
                 human_only: PlayerSplitSummary {
@@ -298,7 +313,9 @@ impl GameHistoryRepository for InMemoryGameHistoryRepository {
                         .filter(|p| p.uuid != player_uuid)
                         .map(|p| GameOpponentSummary {
                             player_uuid: p.uuid.clone(),
+                            display_name: Some(p.display_name.clone()),
                             won: p.won,
+                            is_bot: crate::bot::types::BotPlayer::is_bot_uuid(&p.uuid),
                         })
                         .collect(),
                 })
@@ -333,12 +350,42 @@ impl PostgresGameHistoryRepository {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
+
+    async fn get_play_type_breakdown_from_moves(
+        &self,
+        player_uuid: &str,
+    ) -> Result<PlayTypeBreakdown, StatsError> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                COALESCE(SUM(CASE WHEN jsonb_array_length(cards) = 1 THEN 1 ELSE 0 END), 0) AS total_single_plays,
+                COALESCE(SUM(CASE WHEN jsonb_array_length(cards) = 2 THEN 1 ELSE 0 END), 0) AS total_pair_plays,
+                COALESCE(SUM(CASE WHEN jsonb_array_length(cards) = 3 THEN 1 ELSE 0 END), 0) AS total_triple_plays,
+                COALESCE(SUM(CASE WHEN jsonb_array_length(cards) = 5 THEN 1 ELSE 0 END), 0) AS total_five_card_plays
+            FROM completed_game_moves
+            WHERE player_uuid = $1
+              AND action_type = 'play'
+            "#,
+        )
+        .bind(player_uuid)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StatsError::Repository(e.to_string()))?;
+
+        Ok(PlayTypeBreakdown {
+            single_plays: row.get::<i64, _>("total_single_plays") as u64,
+            pair_plays: row.get::<i64, _>("total_pair_plays") as u64,
+            triple_plays: row.get::<i64, _>("total_triple_plays") as u64,
+            five_card_plays: row.get::<i64, _>("total_five_card_plays") as u64,
+        })
+    }
 }
 
 #[async_trait]
 impl GameHistoryRepository for PostgresGameHistoryRepository {
     async fn record_completed_game(&self, game_result: &GameResult) -> Result<bool, StatsError> {
         debug!(game_id = %game_result.game_id, "Persisting completed game history");
+        let play_breakdown_by_player = calculate_play_type_breakdown(game_result);
 
         let mut tx = self
             .pool
@@ -386,6 +433,7 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
                 INSERT INTO completed_game_players (
                     game_id,
                     player_uuid,
+                    display_name,
                     won,
                     cards_remaining,
                     raw_score,
@@ -397,11 +445,12 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
                     started_first,
                     had_bots,
                     completed_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                 "#,
             )
             .bind(&game_result.game_id)
             .bind(&player.uuid)
+            .bind(&player.display_name)
             .bind(player.won)
             .bind(player.cards_remaining as i16)
             .bind(player.raw_score)
@@ -448,6 +497,10 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
         }
 
         for player in &game_result.players {
+            let play_breakdown = play_breakdown_by_player
+                .get(&player.uuid)
+                .copied()
+                .unwrap_or_default();
             sqlx::query(
                 r#"
                 INSERT INTO player_profile_stats (
@@ -460,6 +513,10 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
                     total_passes,
                     total_plays,
                     total_cards_played,
+                    total_single_plays,
+                    total_pair_plays,
+                    total_triple_plays,
+                    total_five_card_plays,
                     human_games_played,
                     human_wins,
                     bot_games_played,
@@ -479,6 +536,10 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
                     $8,
                     $9,
                     $10,
+                    $11,
+                    $12,
+                    $13,
+                    $14,
                     NOW()
                 )
                 ON CONFLICT (player_uuid) DO UPDATE SET
@@ -499,6 +560,10 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
                     total_passes = player_profile_stats.total_passes + EXCLUDED.total_passes,
                     total_plays = player_profile_stats.total_plays + EXCLUDED.total_plays,
                     total_cards_played = player_profile_stats.total_cards_played + EXCLUDED.total_cards_played,
+                    total_single_plays = player_profile_stats.total_single_plays + EXCLUDED.total_single_plays,
+                    total_pair_plays = player_profile_stats.total_pair_plays + EXCLUDED.total_pair_plays,
+                    total_triple_plays = player_profile_stats.total_triple_plays + EXCLUDED.total_triple_plays,
+                    total_five_card_plays = player_profile_stats.total_five_card_plays + EXCLUDED.total_five_card_plays,
                     human_games_played = player_profile_stats.human_games_played + EXCLUDED.human_games_played,
                     human_wins = player_profile_stats.human_wins + EXCLUDED.human_wins,
                     bot_games_played = player_profile_stats.bot_games_played + EXCLUDED.bot_games_played,
@@ -512,6 +577,10 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
             .bind(player.passes as i64)
             .bind(player.plays as i64)
             .bind(player.cards_played as i64)
+            .bind(play_breakdown.single_plays as i64)
+            .bind(play_breakdown.pair_plays as i64)
+            .bind(play_breakdown.triple_plays as i64)
+            .bind(play_breakdown.five_card_plays as i64)
             .bind(if game_result.had_bots { 0_i64 } else { 1_i64 })
             .bind(if !game_result.had_bots && player.won {
                 1_i64
@@ -548,10 +617,12 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
                 wins,
                 current_win_streak,
                 best_win_streak,
-                total_turns,
                 total_passes,
                 total_plays,
-                total_cards_played,
+                total_single_plays,
+                total_pair_plays,
+                total_triple_plays,
+                total_five_card_plays,
                 human_games_played,
                 human_wins,
                 bot_games_played,
@@ -585,14 +656,32 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
 
         let games_played = row.get::<i64, _>("games_played") as u64;
         let wins = row.get::<i64, _>("wins") as u64;
-        let total_turns = row.get::<i64, _>("total_turns") as u64;
         let total_passes = row.get::<i64, _>("total_passes") as u64;
         let total_plays = row.get::<i64, _>("total_plays") as u64;
-        let total_cards_played = row.get::<i64, _>("total_cards_played") as u64;
+        let stored_total_single_plays = row.get::<i64, _>("total_single_plays") as u64;
+        let stored_total_pair_plays = row.get::<i64, _>("total_pair_plays") as u64;
+        let stored_total_triple_plays = row.get::<i64, _>("total_triple_plays") as u64;
+        let stored_total_five_card_plays = row.get::<i64, _>("total_five_card_plays") as u64;
         let human_games_played = row.get::<i64, _>("human_games_played") as u64;
         let human_wins = row.get::<i64, _>("human_wins") as u64;
         let bot_games_played = row.get::<i64, _>("bot_games_played") as u64;
         let bot_wins = row.get::<i64, _>("bot_wins") as u64;
+
+        let fallback_breakdown = if total_plays > 0
+            && stored_total_single_plays == 0
+            && stored_total_pair_plays == 0
+            && stored_total_triple_plays == 0
+            && stored_total_five_card_plays == 0
+        {
+            self.get_play_type_breakdown_from_moves(player_uuid).await?
+        } else {
+            PlayTypeBreakdown {
+                single_plays: stored_total_single_plays,
+                pair_plays: stored_total_pair_plays,
+                triple_plays: stored_total_triple_plays,
+                five_card_plays: stored_total_five_card_plays,
+            }
+        };
 
         let wins_last_10 = recent_rows
             .iter()
@@ -616,12 +705,11 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
                 best_win_streak: row.get::<i64, _>("best_win_streak") as u64,
             },
             play_style: PlayerPlayStyle {
-                total_turns,
                 total_passes,
-                pass_rate: ratio(total_passes, total_turns),
-                total_plays,
-                total_cards_played,
-                average_cards_per_play: ratio(total_cards_played, total_plays),
+                total_single_plays: fallback_breakdown.single_plays,
+                total_pair_plays: fallback_breakdown.pair_plays,
+                total_triple_plays: fallback_breakdown.triple_plays,
+                total_five_card_plays: fallback_breakdown.five_card_plays,
             },
             splits: PlayerStatsSplits {
                 human_only: PlayerSplitSummary {
@@ -686,7 +774,7 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
             let completed_at = row.get::<DateTime<Utc>, _>("completed_at");
             let opponent_rows = sqlx::query(
                 r#"
-                SELECT player_uuid, won
+                SELECT player_uuid, display_name, won
                 FROM completed_game_players
                 WHERE game_id = $1 AND player_uuid <> $2
                 ORDER BY player_uuid ASC
@@ -702,7 +790,11 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
                 .into_iter()
                 .map(|opponent| GameOpponentSummary {
                     player_uuid: opponent.get("player_uuid"),
+                    display_name: opponent.get("display_name"),
                     won: opponent.get("won"),
+                    is_bot: crate::bot::types::BotPlayer::is_bot_uuid(
+                        &opponent.get::<String, _>("player_uuid"),
+                    ),
                 })
                 .collect();
 
@@ -759,6 +851,7 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
             r#"
             SELECT
                 player_uuid,
+                display_name,
                 won,
                 cards_remaining,
                 raw_score,
@@ -780,10 +873,18 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
 
         let move_rows = sqlx::query(
             r#"
-            SELECT sequence, player_uuid, action_type, cards
-            FROM completed_game_moves
-            WHERE game_id = $1
-            ORDER BY sequence ASC
+            SELECT
+                cgm.sequence,
+                cgm.player_uuid,
+                cgp.display_name,
+                cgm.action_type,
+                cgm.cards
+            FROM completed_game_moves cgm
+            LEFT JOIN completed_game_players cgp
+                ON cgp.game_id = cgm.game_id
+               AND cgp.player_uuid = cgm.player_uuid
+            WHERE cgm.game_id = $1
+            ORDER BY cgm.sequence ASC
             "#,
         )
         .bind(game_id)
@@ -803,7 +904,11 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
                 .into_iter()
                 .map(|row| CompletedGameDetailPlayer {
                     player_uuid: row.get("player_uuid"),
+                    display_name: row.get("display_name"),
                     won: row.get("won"),
+                    is_bot: crate::bot::types::BotPlayer::is_bot_uuid(
+                        &row.get::<String, _>("player_uuid"),
+                    ),
                     cards_remaining: row.get::<i16, _>("cards_remaining") as u8,
                     raw_score: row.get("raw_score"),
                     final_score: row.get("final_score"),
@@ -819,6 +924,10 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
                 .map(|row| CompletedGameDetailMove {
                     sequence: row.get::<i64, _>("sequence") as u32,
                     player_uuid: row.get("player_uuid"),
+                    display_name: row.get("display_name"),
+                    is_bot: crate::bot::types::BotPlayer::is_bot_uuid(
+                        &row.get::<String, _>("player_uuid"),
+                    ),
                     action: match row.get::<String, _>("action_type").as_str() {
                         "pass" => crate::game::MoveAction::Pass,
                         _ => crate::game::MoveAction::Play,
@@ -831,6 +940,12 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
 }
 
 fn build_game_detail_response(game: &GameResult) -> CompletedGameDetailResponse {
+    let display_names: HashMap<String, String> = game
+        .players
+        .iter()
+        .map(|player| (player.uuid.clone(), player.display_name.clone()))
+        .collect();
+
     CompletedGameDetailResponse {
         game_id: game.game_id.clone(),
         room_id: game.room_id.clone(),
@@ -844,7 +959,9 @@ fn build_game_detail_response(game: &GameResult) -> CompletedGameDetailResponse 
             .iter()
             .map(|player| CompletedGameDetailPlayer {
                 player_uuid: player.uuid.clone(),
+                display_name: Some(player.display_name.clone()),
                 won: player.won,
+                is_bot: crate::bot::types::BotPlayer::is_bot_uuid(&player.uuid),
                 cards_remaining: player.cards_remaining,
                 raw_score: player.raw_score,
                 final_score: player.final_score,
@@ -861,11 +978,36 @@ fn build_game_detail_response(game: &GameResult) -> CompletedGameDetailResponse 
             .map(|mv| CompletedGameDetailMove {
                 sequence: mv.sequence,
                 player_uuid: mv.player_uuid.clone(),
+                display_name: display_names.get(&mv.player_uuid).cloned(),
+                is_bot: crate::bot::types::BotPlayer::is_bot_uuid(&mv.player_uuid),
                 action: mv.action,
                 cards: mv.cards.clone(),
             })
             .collect(),
     }
+}
+
+fn calculate_play_type_breakdown(game_result: &GameResult) -> HashMap<String, PlayTypeBreakdown> {
+    let mut breakdown_by_player: HashMap<String, PlayTypeBreakdown> = HashMap::new();
+
+    for mv in &game_result.moves {
+        if !matches!(mv.action, crate::game::MoveAction::Play) {
+            continue;
+        }
+
+        let breakdown = breakdown_by_player
+            .entry(mv.player_uuid.clone())
+            .or_default();
+        match mv.cards.len() {
+            1 => breakdown.single_plays += 1,
+            2 => breakdown.pair_plays += 1,
+            3 => breakdown.triple_plays += 1,
+            5 => breakdown.five_card_plays += 1,
+            _ => {}
+        }
+    }
+
+    breakdown_by_player
 }
 
 fn ratio(numerator: u64, denominator: u64) -> f64 {
@@ -895,6 +1037,7 @@ mod tests {
                 .map(
                     |(uuid, cards_remaining, raw_score, final_score)| PlayerGameResult {
                         uuid: uuid.clone(),
+                        display_name: uuid.clone(),
                         won: uuid == winner_uuid,
                         cards_remaining,
                         raw_score,
@@ -934,11 +1077,13 @@ mod tests {
 
         let winner = stats.player_stats.get("player-1").unwrap();
         assert_eq!(winner.wins, 1);
+        assert_eq!(winner.cards_remaining, 0);
         assert_eq!(winner.current_win_streak, 1);
         assert_eq!(winner.best_win_streak, 1);
 
         let loser = stats.player_stats.get("player-2").unwrap();
         assert_eq!(loser.wins, 0);
+        assert_eq!(loser.cards_remaining, 5);
         assert_eq!(loser.current_win_streak, 0);
         assert_eq!(loser.total_score, 5);
     }
@@ -965,5 +1110,158 @@ mod tests {
             .unwrap();
         assert_eq!(stats.summary.games_played, 1);
         assert_eq!(stats.summary.wins, 1);
+    }
+
+    #[tokio::test]
+    async fn in_memory_history_tracks_play_breakdown_totals() {
+        let repo = InMemoryGameHistoryRepository::new();
+        let mut game = sample_game(
+            "room-1",
+            "player-1",
+            vec![
+                ("player-1".to_string(), 0, 0, 0),
+                ("player-2".to_string(), 5, 5, 5),
+            ],
+        );
+
+        game.players[0].turns_taken = 5;
+        game.players[0].passes = 1;
+        game.players[0].plays = 4;
+        game.players[0].cards_played = 11;
+        game.moves = vec![
+            crate::stats::GameMoveResult {
+                sequence: 1,
+                player_uuid: "player-1".to_string(),
+                action: crate::game::MoveAction::Play,
+                cards: vec![crate::game::Card::from_string("3D").unwrap()],
+            },
+            crate::stats::GameMoveResult {
+                sequence: 2,
+                player_uuid: "player-1".to_string(),
+                action: crate::game::MoveAction::Play,
+                cards: vec![
+                    crate::game::Card::from_string("4D").unwrap(),
+                    crate::game::Card::from_string("4C").unwrap(),
+                ],
+            },
+            crate::stats::GameMoveResult {
+                sequence: 3,
+                player_uuid: "player-1".to_string(),
+                action: crate::game::MoveAction::Play,
+                cards: vec![
+                    crate::game::Card::from_string("5D").unwrap(),
+                    crate::game::Card::from_string("5C").unwrap(),
+                    crate::game::Card::from_string("5H").unwrap(),
+                ],
+            },
+            crate::stats::GameMoveResult {
+                sequence: 4,
+                player_uuid: "player-1".to_string(),
+                action: crate::game::MoveAction::Play,
+                cards: vec![
+                    crate::game::Card::from_string("6D").unwrap(),
+                    crate::game::Card::from_string("7D").unwrap(),
+                    crate::game::Card::from_string("8D").unwrap(),
+                    crate::game::Card::from_string("9D").unwrap(),
+                    crate::game::Card::from_string("TD").unwrap(),
+                ],
+            },
+            crate::stats::GameMoveResult {
+                sequence: 5,
+                player_uuid: "player-2".to_string(),
+                action: crate::game::MoveAction::Pass,
+                cards: vec![],
+            },
+        ];
+
+        repo.record_completed_game(&game).await.unwrap();
+
+        let stats = repo
+            .get_player_profile_stats("player-1", "Player 1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stats.play_style.total_single_plays, 1);
+        assert_eq!(stats.play_style.total_pair_plays, 1);
+        assert_eq!(stats.play_style.total_triple_plays, 1);
+        assert_eq!(stats.play_style.total_five_card_plays, 1);
+        assert_eq!(stats.play_style.total_passes, 1);
+    }
+
+    #[tokio::test]
+    async fn in_memory_history_preserves_historical_display_names() {
+        let repo = InMemoryGameHistoryRepository::new();
+        let game = GameResult {
+            game_id: "room-1-1".to_string(),
+            room_id: "room-1".to_string(),
+            game_number: 1,
+            winner_uuid: "player-1".to_string(),
+            players: vec![
+                PlayerGameResult {
+                    uuid: "player-1".to_string(),
+                    display_name: "Current Player".to_string(),
+                    won: true,
+                    cards_remaining: 0,
+                    raw_score: 0,
+                    final_score: 0,
+                    turns_taken: 0,
+                    passes: 0,
+                    plays: 0,
+                    cards_played: 0,
+                    started_first: true,
+                },
+                PlayerGameResult {
+                    uuid: "player-2".to_string(),
+                    display_name: "Archived Opponent".to_string(),
+                    won: false,
+                    cards_remaining: 5,
+                    raw_score: 5,
+                    final_score: 5,
+                    turns_taken: 0,
+                    passes: 0,
+                    plays: 0,
+                    cards_played: 0,
+                    started_first: false,
+                },
+            ],
+            moves: vec![crate::stats::GameMoveResult {
+                sequence: 1,
+                player_uuid: "player-2".to_string(),
+                action: crate::game::MoveAction::Pass,
+                cards: vec![],
+            }],
+            started_at: Utc::now(),
+            completed_at: Utc::now(),
+            had_bots: false,
+        };
+
+        repo.record_completed_game(&game).await.unwrap();
+
+        let recent = repo
+            .get_recent_games_for_player("player-1", 10, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            recent.games[0].opponents[0].display_name.as_deref(),
+            Some("Archived Opponent")
+        );
+
+        let detail = repo
+            .get_completed_game_for_player("player-1", "room-1-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            detail
+                .players
+                .iter()
+                .find(|player| player.player_uuid == "player-2")
+                .and_then(|player| player.display_name.as_deref()),
+            Some("Archived Opponent")
+        );
+        assert_eq!(
+            detail.moves[0].display_name.as_deref(),
+            Some("Archived Opponent")
+        );
     }
 }

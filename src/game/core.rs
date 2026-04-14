@@ -31,6 +31,8 @@ pub struct MoveRecord {
 pub enum GameError {
     #[error("Invalid player")]
     InvalidPlayerTurn,
+    #[error("Game already finished")]
+    GameAlreadyFinished,
     #[error("Invalid played cards")]
     InvalidPlayedCards,
     #[error("Cannot pass - must play cards (3 consecutive passes)")]
@@ -135,6 +137,10 @@ impl Game {
 
     /// Play cards by player UUID
     pub fn play_cards(&mut self, player_uuid: &str, cards: &[Card]) -> Result<bool, GameError> {
+        if self.is_finished() {
+            return Err(GameError::GameAlreadyFinished);
+        }
+
         self.validate_player_turn(player_uuid)?;
 
         if cards.is_empty() {
@@ -176,7 +182,9 @@ impl Game {
         self.validate_first_turn(cards)?;
 
         let player_won = self.execute_card_play(cards, new_hand);
-        self.advance_turn();
+        if !player_won {
+            self.advance_turn();
+        }
 
         Ok(player_won)
     }
@@ -256,6 +264,10 @@ impl Game {
             action,
             cards,
         });
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.players.iter().any(|player| player.cards.is_empty())
     }
 
     pub fn id(&self) -> &str {
@@ -1016,6 +1028,42 @@ mod tests {
     }
 
     #[test]
+    fn test_winning_turn_does_not_advance_and_game_rejects_later_moves() {
+        let players = vec![
+            Player {
+                name: "Alice".to_string(),
+                uuid: "alice-uuid".to_string(),
+                cards: vec![Card::new(Rank::Three, Suit::Diamonds)],
+            },
+            Player {
+                name: "Bob".to_string(),
+                uuid: "bob-uuid".to_string(),
+                cards: vec![Card::new(Rank::Four, Suit::Clubs)],
+            },
+        ];
+
+        let mut game = Game::new(
+            "test".to_string(),
+            players.clone(),
+            0,
+            0,
+            vec![],
+            players
+                .iter()
+                .map(|player| (player.uuid.clone(), player.cards.clone()))
+                .collect(),
+        );
+
+        let result = game.play_cards("alice-uuid", &[Card::new(Rank::Three, Suit::Diamonds)]);
+        assert!(matches!(result, Ok(true)));
+        assert!(game.is_finished());
+        assert_eq!(game.current_player_turn(), "alice-uuid");
+
+        let stale_move = game.play_cards("bob-uuid", &[Card::new(Rank::Four, Suit::Clubs)]);
+        assert!(matches!(stale_move, Err(GameError::GameAlreadyFinished)));
+    }
+
+    #[test]
     fn test_first_turn_with_three_of_diamonds_in_combination_succeeds() {
         let players = vec![
             Player {
@@ -1097,8 +1145,8 @@ mod tests {
         // Bob should be able to play any valid card that beats 3♦ or just pass
         let result2 = game.play_cards("bob-uuid", &[Card::new(Rank::Four, Suit::Clubs)]);
         assert!(result2.is_ok());
-        // In a 2-player game, after both players play once, it cycles back to Alice (0 -> 1 -> 0)
-        assert_eq!(game.current_player_turn(), "alice-uuid");
+        // Bob's play empties his hand, so the finished game should stay on Bob's turn.
+        assert_eq!(game.current_player_turn(), "bob-uuid");
     }
 
     #[test]

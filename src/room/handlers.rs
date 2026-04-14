@@ -355,7 +355,7 @@ mod tests {
         assert!(!room_response.id.is_empty());
         assert_eq!(room_response.host_name, "test-player");
         assert_eq!(room_response.status, "ONLINE");
-        assert_eq!(room_response.player_count, 0); // Host doesn't auto-join
+        assert_eq!(room_response.player_count, 1);
     }
 
     #[tokio::test]
@@ -498,7 +498,7 @@ mod tests {
         for room in &rooms {
             assert!(!room.id.is_empty());
             assert_eq!(room.status, "ONLINE");
-            assert_eq!(room.player_count, 0); // Host doesn't auto-join
+            assert_eq!(room.player_count, 1);
         }
     }
 
@@ -538,7 +538,7 @@ mod tests {
         assert_eq!(rooms[0].id, created_room.id);
         assert_eq!(rooms[0].host_name, "550e8400-e29b-41d4-a716-446655440000"); // No mapping, so UUID
         assert_eq!(rooms[0].status, "ONLINE");
-        assert_eq!(rooms[0].player_count, 0); // Host doesn't auto-join
+        assert_eq!(rooms[0].player_count, 1);
     }
 
     #[tokio::test]

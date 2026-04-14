@@ -761,20 +761,22 @@ mod tests {
         room.add_player("player1".to_string());
         room.add_player("player2".to_string());
 
-        assert_eq!(room.get_player_count(), 2);
+        assert_eq!(room.get_player_count(), 3);
         assert!(room.has_player("player1"));
         assert!(room.has_player("player2"));
+        assert!(room.has_player("test-host"));
 
         // Test removing player by UUID
         room.remove_player("player1");
-        assert_eq!(room.get_player_count(), 1);
+        assert_eq!(room.get_player_count(), 2);
         assert!(!room.has_player("player1"));
         assert!(room.has_player("player2"));
 
         // Test removing player by both username and UUID
         room.remove_player("player2");
-        assert_eq!(room.get_player_count(), 0);
+        assert_eq!(room.get_player_count(), 1);
         assert!(!room.has_player("player2"));
+        assert!(room.has_player("test-host"));
     }
 
     #[tokio::test]

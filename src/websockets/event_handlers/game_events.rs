@@ -277,6 +277,153 @@ impl GameEventHandlers {
             "Game won notification sent to all players"
         );
 
+        self.game_service.remove_game(room_id).await;
+        info!(
+            room_id = %room_id,
+            "Removed completed game from repository after win broadcast"
+        );
+
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::{mpsc, Mutex};
+
+    use crate::{
+        bot::BotManager,
+        room::{repository::InMemoryRoomRepository, service::RoomService},
+        user::mapping_service::InMemoryPlayerMappingService,
+    };
+
+    struct TestConnectionManager {
+        messages: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    }
+
+    impl TestConnectionManager {
+        fn new() -> Self {
+            Self {
+                messages: Arc::new(Mutex::new(HashMap::new())),
+            }
+        }
+
+        async fn messages_for(&self, uuid: &str) -> Vec<String> {
+            self.messages
+                .lock()
+                .await
+                .get(uuid)
+                .cloned()
+                .unwrap_or_default()
+        }
+    }
+
+    #[async_trait]
+    impl ConnectionManager for TestConnectionManager {
+        async fn add_connection(&self, _uuid: String, _sender: mpsc::UnboundedSender<String>) {}
+
+        async fn remove_connection(&self, _uuid: &str) {}
+
+        async fn send_to_player(&self, uuid: &str, message: &str) {
+            self.messages
+                .lock()
+                .await
+                .entry(uuid.to_string())
+                .or_default()
+                .push(message.to_string());
+        }
+
+        async fn send_to_players(&self, uuids: &[String], message: &str) {
+            for uuid in uuids {
+                self.send_to_player(uuid, message).await;
+            }
+        }
+
+        async fn count_online_players(&self) -> usize {
+            0
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_game_won_broadcasts_then_removes_completed_game() {
+        let player_mapping = Arc::new(InMemoryPlayerMappingService::new());
+        let game_service = Arc::new(GameService::new(player_mapping));
+        let room_service = Arc::new(RoomService::new(Arc::new(InMemoryRoomRepository::new())));
+        let connection_manager = Arc::new(TestConnectionManager::new());
+        let bot_manager = Arc::new(BotManager::new());
+        let handlers = GameEventHandlers::new(
+            room_service,
+            connection_manager.clone(),
+            game_service.clone(),
+            EventBus::new(),
+            bot_manager,
+        );
+
+        let winning_hand = vec![Card::new(
+            crate::game::Rank::Three,
+            crate::game::Suit::Diamonds,
+        )];
+        let player_data = vec![
+            (
+                "Alice".to_string(),
+                "alice-uuid".to_string(),
+                winning_hand.clone(),
+            ),
+            (
+                "Bob".to_string(),
+                "bob-uuid".to_string(),
+                vec![Card::new(
+                    crate::game::Rank::Four,
+                    crate::game::Suit::Hearts,
+                )],
+            ),
+            (
+                "Charlie".to_string(),
+                "charlie-uuid".to_string(),
+                vec![Card::new(crate::game::Rank::Five, crate::game::Suit::Clubs)],
+            ),
+            (
+                "David".to_string(),
+                "david-uuid".to_string(),
+                vec![Card::new(crate::game::Rank::Six, crate::game::Suit::Spades)],
+            ),
+        ];
+
+        game_service
+            .create_game_with_cards("room-1", player_data)
+            .await
+            .expect("game setup should succeed");
+
+        let move_result = game_service
+            .try_play_move("room-1", "alice-uuid", &winning_hand)
+            .await
+            .expect("winning move should succeed");
+        assert!(game_service.get_game("room-1").await.is_some());
+
+        handlers
+            .handle_game_won(
+                "room-1",
+                "alice-uuid",
+                move_result
+                    .winning_hand
+                    .as_ref()
+                    .expect("winning hand should be present"),
+                move_result.game,
+            )
+            .await
+            .expect("game won handler should succeed");
+
+        assert!(game_service.get_game("room-1").await.is_none());
+        assert_eq!(connection_manager.messages_for("alice-uuid").await.len(), 1);
+        assert_eq!(connection_manager.messages_for("bob-uuid").await.len(), 1);
+        assert_eq!(
+            connection_manager.messages_for("charlie-uuid").await.len(),
+            1
+        );
+        assert_eq!(connection_manager.messages_for("david-uuid").await.len(), 1);
     }
 }
