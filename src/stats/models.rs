@@ -174,7 +174,7 @@ pub struct PlayerStats {
     pub uuid: String,
     pub games_played: u32,
     pub wins: u32,
-    pub cards_remaining: u8,
+    pub cards_remaining: u32,
     pub total_score: i32,
     pub current_win_streak: u32,
     pub best_win_streak: u32,

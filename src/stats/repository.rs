@@ -82,7 +82,9 @@ impl StatsRepository for InMemoryStatsRepository {
                 });
 
             player_stats.games_played += 1;
-            player_stats.cards_remaining = player_result.cards_remaining;
+            player_stats.cards_remaining = player_stats
+                .cards_remaining
+                .saturating_add(player_result.cards_remaining as u32);
             player_stats.total_score += player_result.final_score;
 
             if player_result.uuid == game_result.winner_uuid {
@@ -1086,6 +1088,23 @@ mod tests {
         assert_eq!(loser.cards_remaining, 5);
         assert_eq!(loser.current_win_streak, 0);
         assert_eq!(loser.total_score, 5);
+
+        let second_game = sample_game(
+            "room-1",
+            "player-1",
+            vec![
+                ("player-1".to_string(), 0, 0, 0),
+                ("player-2".to_string(), 3, 3, 3),
+            ],
+        );
+
+        repo.record_game(second_game).await.unwrap();
+
+        let stats = repo.get_room_stats("room-1").await.unwrap().unwrap();
+        let loser = stats.player_stats.get("player-2").unwrap();
+        assert_eq!(stats.games_played, 2);
+        assert_eq!(loser.cards_remaining, 8);
+        assert_eq!(loser.total_score, 8);
     }
 
     #[tokio::test]
