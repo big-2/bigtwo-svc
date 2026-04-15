@@ -119,10 +119,7 @@ struct InMemoryProfileAggregate {
     wins: u64,
     current_win_streak: u64,
     best_win_streak: u64,
-    total_turns: u64,
     total_passes: u64,
-    total_plays: u64,
-    total_cards_played: u64,
     total_single_plays: u64,
     total_pair_plays: u64,
     total_triple_plays: u64,
@@ -184,10 +181,7 @@ impl GameHistoryRepository for InMemoryGameHistoryRepository {
                 .unwrap_or_default();
             aggregate.games_played += 1;
             aggregate.wins += u64::from(player.won);
-            aggregate.total_turns += player.turns_taken as u64;
             aggregate.total_passes += player.passes as u64;
-            aggregate.total_plays += player.plays as u64;
-            aggregate.total_cards_played += player.cards_played as u64;
             aggregate.total_single_plays += play_breakdown.single_plays;
             aggregate.total_pair_plays += play_breakdown.pair_plays;
             aggregate.total_triple_plays += play_breakdown.triple_plays;
@@ -253,12 +247,7 @@ impl GameHistoryRepository for InMemoryGameHistoryRepository {
                 best_win_streak: aggregate.best_win_streak,
             },
             play_style: PlayerPlayStyle {
-                total_turns: aggregate.total_turns,
                 total_passes: aggregate.total_passes,
-                pass_rate: ratio(aggregate.total_passes, aggregate.total_turns),
-                total_plays: aggregate.total_plays,
-                total_cards_played: aggregate.total_cards_played,
-                average_cards_per_play: ratio(aggregate.total_cards_played, aggregate.total_plays),
                 total_single_plays: aggregate.total_single_plays,
                 total_pair_plays: aggregate.total_pair_plays,
                 total_triple_plays: aggregate.total_triple_plays,
@@ -630,10 +619,8 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
                 wins,
                 current_win_streak,
                 best_win_streak,
-                total_turns,
                 total_passes,
                 total_plays,
-                total_cards_played,
                 total_single_plays,
                 total_pair_plays,
                 total_triple_plays,
@@ -671,10 +658,8 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
 
         let games_played = row.get::<i64, _>("games_played") as u64;
         let wins = row.get::<i64, _>("wins") as u64;
-        let total_turns = row.get::<i64, _>("total_turns") as u64;
         let total_passes = row.get::<i64, _>("total_passes") as u64;
         let total_plays = row.get::<i64, _>("total_plays") as u64;
-        let total_cards_played = row.get::<i64, _>("total_cards_played") as u64;
         let stored_total_single_plays = row.get::<i64, _>("total_single_plays") as u64;
         let stored_total_pair_plays = row.get::<i64, _>("total_pair_plays") as u64;
         let stored_total_triple_plays = row.get::<i64, _>("total_triple_plays") as u64;
@@ -722,12 +707,7 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
                 best_win_streak: row.get::<i64, _>("best_win_streak") as u64,
             },
             play_style: PlayerPlayStyle {
-                total_turns,
                 total_passes,
-                pass_rate: ratio(total_passes, total_turns),
-                total_plays,
-                total_cards_played,
-                average_cards_per_play: ratio(total_cards_played, total_plays),
                 total_single_plays: fallback_breakdown.single_plays,
                 total_pair_plays: fallback_breakdown.pair_plays,
                 total_triple_plays: fallback_breakdown.triple_plays,
@@ -1220,11 +1200,6 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(stats.play_style.total_turns, 5);
-        assert_eq!(stats.play_style.total_plays, 4);
-        assert_eq!(stats.play_style.total_cards_played, 11);
-        assert!((stats.play_style.pass_rate - 0.2).abs() < f64::EPSILON);
-        assert!((stats.play_style.average_cards_per_play - 2.75).abs() < f64::EPSILON);
         assert_eq!(stats.play_style.total_single_plays, 1);
         assert_eq!(stats.play_style.total_pair_plays, 1);
         assert_eq!(stats.play_style.total_triple_plays, 1);

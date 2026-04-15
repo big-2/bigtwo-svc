@@ -66,12 +66,7 @@ pub struct PlayerStatsSummary {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PlayerPlayStyle {
-    pub total_turns: u64,
     pub total_passes: u64,
-    pub pass_rate: f64,
-    pub total_plays: u64,
-    pub total_cards_played: u64,
-    pub average_cards_per_play: f64,
     pub total_single_plays: u64,
     pub total_pair_plays: u64,
     pub total_triple_plays: u64,
