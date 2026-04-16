@@ -58,7 +58,13 @@ impl RoomService {
         debug!("Listing all rooms");
 
         // Get all rooms from repository
-        let rooms = self.repository.list_rooms().await?;
+        let rooms = self
+            .repository
+            .list_rooms()
+            .await?
+            .into_iter()
+            .filter(|room| room.get_player_count() > 0)
+            .collect::<Vec<_>>();
 
         info!(room_count = rooms.len(), "Rooms retrieved successfully");
 
@@ -259,7 +265,7 @@ mod tests {
 
         let created = result.unwrap();
         assert_eq!(created.status, "ONLINE");
-        assert_eq!(created.get_player_count(), 0); // Host doesn't auto-join
+        assert_eq!(created.get_player_count(), 1);
         assert!(!created.id.is_empty());
 
         // Verify room was actually stored in repository by trying to get it
@@ -375,6 +381,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_list_rooms_excludes_zero_player_rooms() {
+        let repository = Arc::new(InMemoryRoomRepository::new());
+        let service = RoomService::new(repository.clone());
+
+        let visible_room = RoomModel::new("host-with-player".to_string());
+        let mut empty_room = RoomModel::new("ghost-host".to_string());
+        empty_room.player_uuids.clear();
+
+        repository.create_room(&visible_room).await.unwrap();
+        repository.create_room(&empty_room).await.unwrap();
+
+        let rooms = service.list_rooms().await.unwrap();
+
+        assert_eq!(rooms.len(), 1);
+        assert_eq!(rooms[0].host_uuid, Some("host-with-player".to_string()));
+    }
+
+    #[tokio::test]
     async fn test_join_room_success() {
         let repository = Arc::new(InMemoryRoomRepository::new());
         let service = RoomService::new(repository.clone());
@@ -392,7 +416,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(joined_room.id, created_room.id);
-        assert_eq!(joined_room.get_player_count(), 1); // Only the new player who joined
+        assert_eq!(joined_room.get_player_count(), 2);
     }
 
     #[tokio::test]
@@ -419,7 +443,7 @@ mod tests {
         };
         let created_room = service.create_room(create_request).await.unwrap();
 
-        // Add 4 players to reach capacity (4 total)
+        // Add 3 players to reach capacity (host + 3 others = 4 total)
         service
             .join_room(created_room.id.clone(), "player1".to_string())
             .await
@@ -432,18 +456,13 @@ mod tests {
             .join_room(created_room.id.clone(), "player3".to_string())
             .await
             .unwrap();
-        service
-            .join_room(created_room.id.clone(), "player4".to_string())
-            .await
-            .unwrap();
-
         // Verify room is at capacity
         let room = repository
             .get_room(&created_room.id)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(room.get_player_count(), 4); // 4 players joined (room is full)
+        assert_eq!(room.get_player_count(), 4);
 
         // Try to join again - should fail
         let result = service
@@ -464,28 +483,28 @@ mod tests {
             host_uuid: "550e8400-e29b-41d4-a716-446655440003".to_string(),
         };
         let created_room = service.create_room(create_request).await.unwrap();
-        assert_eq!(created_room.get_player_count(), 0); // Host doesn't auto-join
+        assert_eq!(created_room.get_player_count(), 1);
 
         // Add second player
         let second_join = service
             .join_room(created_room.id.clone(), "player2".to_string())
             .await
             .unwrap();
-        assert_eq!(second_join.get_player_count(), 1); // First player joined
+        assert_eq!(second_join.get_player_count(), 2);
 
         // Add third player
         let third_join = service
             .join_room(created_room.id.clone(), "player3".to_string())
             .await
             .unwrap();
-        assert_eq!(third_join.get_player_count(), 2); // Second player joined
+        assert_eq!(third_join.get_player_count(), 3);
 
         // Add fourth player
         let fourth_join = service
             .join_room(created_room.id.clone(), "player4".to_string())
             .await
             .unwrap();
-        assert_eq!(fourth_join.get_player_count(), 3); // Third player joined
+        assert_eq!(fourth_join.get_player_count(), 4);
 
         // Verify final state
         let final_room = repository
@@ -493,7 +512,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(final_room.get_player_count(), 3);
+        assert_eq!(final_room.get_player_count(), 4);
         assert_eq!(
             final_room.host_uuid,
             Some("550e8400-e29b-41d4-a716-446655440003".to_string())
@@ -522,13 +541,13 @@ mod tests {
             .await
             .unwrap();
 
-        // Verify we're at 2 players
+        // Verify we're at 3 players including the host
         let room = repository
             .get_room(&created_room.id)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(room.get_player_count(), 2); // 2 players joined (host didn't auto-join)
+        assert_eq!(room.get_player_count(), 3);
 
         // Simulate multiple concurrent join attempts
         let room_id = created_room.id.clone();
@@ -548,9 +567,9 @@ mod tests {
 
         let results = futures::future::join_all(handles).await;
 
-        // Only 2 should succeed (reaching capacity of 4), others should fail
+        // Only 1 should succeed (reaching capacity of 4), others should fail
         let successes = results.into_iter().filter_map(|r| r.unwrap().ok()).count();
-        assert_eq!(successes, 2); // 2 more players can join (2 existing + 2 new = 4 total)
+        assert_eq!(successes, 1);
 
         // Verify final room state
         let final_room = repository
@@ -758,7 +777,7 @@ mod tests {
             .unwrap();
         assert!(!room.is_ready("player1"));
         assert_eq!(room.get_ready_players().len(), 0);
-        assert_eq!(room.get_player_count(), 1); // Only player2 remains
+        assert_eq!(room.get_player_count(), 2); // Host and player2 remain
     }
 
     #[tokio::test]

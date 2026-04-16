@@ -23,6 +23,7 @@ pub struct GameResult {
 #[derive(Debug, Clone)]
 pub struct PlayerGameResult {
     pub uuid: String,
+    pub display_name: String,
     pub won: bool,
     #[allow(dead_code)] // Used in score calculations
     pub cards_remaining: u8,
@@ -65,12 +66,11 @@ pub struct PlayerStatsSummary {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PlayerPlayStyle {
-    pub total_turns: u64,
     pub total_passes: u64,
-    pub pass_rate: f64,
-    pub total_plays: u64,
-    pub total_cards_played: u64,
-    pub average_cards_per_play: f64,
+    pub total_single_plays: u64,
+    pub total_pair_plays: u64,
+    pub total_triple_plays: u64,
+    pub total_five_card_plays: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -118,7 +118,9 @@ pub struct PlayerRecentGameSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameOpponentSummary {
     pub player_uuid: String,
+    pub display_name: Option<String>,
     pub won: bool,
+    pub is_bot: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,7 +139,9 @@ pub struct CompletedGameDetailResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletedGameDetailPlayer {
     pub player_uuid: String,
+    pub display_name: Option<String>,
     pub won: bool,
+    pub is_bot: bool,
     pub cards_remaining: u8,
     pub raw_score: i32,
     pub final_score: i32,
@@ -152,6 +156,8 @@ pub struct CompletedGameDetailPlayer {
 pub struct CompletedGameDetailMove {
     pub sequence: u32,
     pub player_uuid: String,
+    pub display_name: Option<String>,
+    pub is_bot: bool,
     pub action: MoveAction,
     pub cards: Vec<Card>,
 }
@@ -168,6 +174,7 @@ pub struct PlayerStats {
     pub uuid: String,
     pub games_played: u32,
     pub wins: u32,
+    pub cards_remaining: u32,
     pub total_score: i32,
     pub current_win_streak: u32,
     pub best_win_streak: u32,
