@@ -1,5 +1,9 @@
 use crate::{
-    game::{cards::Card, core::Game, repository::GameRepository},
+    game::{
+        cards::Card,
+        core::{Game, GameError},
+        repository::{GameRepository, GameStateRepository},
+    },
     shared::AppError,
     user::PlayerMappingService,
 };
@@ -16,14 +20,21 @@ pub struct MoveResult {
 }
 
 pub struct GameService {
-    game_repository: GameRepository,
+    game_repository: std::sync::Arc<dyn GameStateRepository>,
     player_mapping: std::sync::Arc<dyn PlayerMappingService>,
 }
 
 impl GameService {
     pub fn new(player_mapping: std::sync::Arc<dyn PlayerMappingService>) -> Self {
+        Self::with_repository(std::sync::Arc::new(GameRepository::new()), player_mapping)
+    }
+
+    pub fn with_repository(
+        game_repository: std::sync::Arc<dyn GameStateRepository>,
+        player_mapping: std::sync::Arc<dyn PlayerMappingService>,
+    ) -> Self {
         Self {
-            game_repository: GameRepository::new(),
+            game_repository,
             player_mapping,
         }
     }
@@ -79,12 +90,7 @@ impl GameService {
         self.game_repository
             .create_game(room_id, &player_data)
             .await
-            .map_err(|_e| AppError::Internal)?;
-
-        self.game_repository
-            .get_game(room_id)
-            .await
-            .ok_or(AppError::Internal)
+            .map_err(|_e| AppError::Internal)
     }
 
     /// Try to play a move for a player in the specified room
@@ -95,46 +101,39 @@ impl GameService {
         player_uuid: &str,
         cards: &[Card],
     ) -> Result<MoveResult, AppError> {
-        // Get current game
-        let mut game = self
+        let move_update = self
             .game_repository
-            .get_game(room_id)
+            .try_play_move(room_id, player_uuid, cards)
             .await
+            .map_err(Self::map_move_error)?
             .ok_or_else(|| AppError::NotFound(format!("Game not found for room: {}", room_id)))?;
 
-        // Execute the move and check if player won
-        let player_won = game
-            .play_cards(player_uuid, cards)
-            .map_err(|e| AppError::NotFound(format!("Game error: {}", e)))?;
-
-        let winning_hand = if player_won {
-            Some(game.last_played_cards())
-        } else {
-            None
-        };
-
-        // Keep the terminal snapshot in the repository until the GameWon
-        // broadcast completes so reconnecting clients can still hydrate.
-        self.game_repository
-            .update_game(room_id, game.clone())
-            .await
-            .map_err(|_e| AppError::Internal)?;
-
         Ok(MoveResult {
-            game,
-            player_won,
-            winning_hand,
+            game: move_update.game,
+            player_won: move_update.player_won,
+            winning_hand: move_update.winning_hand,
         })
+    }
+
+    fn map_move_error(error: GameError) -> AppError {
+        match error {
+            GameError::StorageError(_) => AppError::Internal,
+            other => AppError::NotFound(format!("Game error: {}", other)),
+        }
     }
 
     /// Get the current game state for a room (read-only access)
     pub async fn get_game(&self, room_id: &str) -> Option<Game> {
-        self.game_repository.get_game(room_id).await
+        self.game_repository.get_game(room_id).await.ok().flatten()
     }
 
     /// Remove a game from the repository (typically after completion)
     pub async fn remove_game(&self, room_id: &str) -> Option<Game> {
-        self.game_repository.remove_game(room_id).await
+        self.game_repository
+            .remove_game(room_id)
+            .await
+            .ok()
+            .flatten()
     }
 
     /// Create a new game with predetermined card distributions

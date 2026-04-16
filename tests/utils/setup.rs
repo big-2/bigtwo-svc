@@ -170,6 +170,7 @@ impl TestSetupBuilder {
             player_mapping.clone(),
             event_bus.clone(),
             Arc::clone(&bot_manager),
+            Arc::clone(&stats_service),
         );
 
         let subscription = RoomSubscription::new(

@@ -5,7 +5,9 @@ use crate::websockets::event_handlers::shared::{MessageBroadcaster, PlayerMappin
 use crate::{
     bot::BotManager,
     event::{EventBus, RoomEvent, RoomEventError},
+    game::GameService,
     room::{repository::LeaveRoomResult, service::RoomService},
+    stats::service::StatsService,
     user::PlayerMappingService,
     websockets::{connection_manager::ConnectionManager, messages::WebSocketMessage},
 };
@@ -17,6 +19,8 @@ pub struct ConnectionEventHandlers {
     player_mapping: Arc<dyn PlayerMappingService>,
     event_bus: EventBus,
     bot_manager: Arc<BotManager>,
+    game_service: Arc<GameService>,
+    stats_service: Arc<StatsService>,
 }
 
 impl ConnectionEventHandlers {
@@ -26,6 +30,8 @@ impl ConnectionEventHandlers {
         player_mapping: Arc<dyn PlayerMappingService>,
         event_bus: EventBus,
         bot_manager: Arc<BotManager>,
+        game_service: Arc<GameService>,
+        stats_service: Arc<StatsService>,
     ) -> Self {
         Self {
             room_service,
@@ -33,6 +39,8 @@ impl ConnectionEventHandlers {
             player_mapping,
             event_bus,
             bot_manager,
+            game_service,
+            stats_service,
         }
     }
 
@@ -95,11 +103,21 @@ impl ConnectionEventHandlers {
                 debug!(
                     room_id = %room_id,
                     player_uuid = %player_uuid,
-                    "Room deleted after player left, cleaning up bots"
+                    "Room deleted after player left, cleaning up room state"
                 );
 
                 // Get all bots in the room before removing them
                 let bots_in_room = self.bot_manager.get_bots_in_room(room_id).await;
+
+                self.game_service.remove_game(room_id).await;
+
+                if let Err(err) = self.stats_service.reset_room_stats(room_id).await {
+                    debug!(
+                        room_id = %room_id,
+                        error = %err,
+                        "Failed to reset room stats during room cleanup"
+                    );
+                }
 
                 // Clean up all bots in the room
                 if let Err(e) = self.bot_manager.remove_all_bots_in_room(room_id).await {
@@ -121,6 +139,8 @@ impl ConnectionEventHandlers {
                         );
                     }
                 }
+
+                self.event_bus.remove_room(room_id).await;
             }
             Ok(_) => {
                 debug!(

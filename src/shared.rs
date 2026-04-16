@@ -392,6 +392,9 @@ pub mod test_utils {
         async fn delete_session(&self, _session_id: &str) -> Result<(), AppError> {
             Ok(())
         }
+        async fn cleanup_expired_session_ids(&self) -> Result<Vec<String>, AppError> {
+            Ok(vec![])
+        }
         async fn cleanup_expired_sessions(&self) -> Result<u64, AppError> {
             Ok(0)
         }
@@ -497,7 +500,7 @@ pub mod test_utils {
         async fn add_connection(
             &self,
             _username: String,
-            _sender: tokio::sync::mpsc::UnboundedSender<String>,
+            _sender: tokio::sync::mpsc::Sender<String>,
         ) {
         }
 

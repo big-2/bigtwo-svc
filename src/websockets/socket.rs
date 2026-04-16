@@ -91,7 +91,7 @@ pub struct Connection {
     pub username: String,
     pub room_id: String,
     socket: Box<dyn SocketWrapper>,
-    outbound_receiver: mpsc::UnboundedReceiver<String>,
+    outbound_receiver: mpsc::Receiver<String>,
     message_handler: Arc<dyn MessageHandler>,
 }
 
@@ -100,7 +100,7 @@ impl Connection {
         username: String,
         room_id: String,
         socket: Box<dyn SocketWrapper>,
-        outbound_receiver: mpsc::UnboundedReceiver<String>,
+        outbound_receiver: mpsc::Receiver<String>,
         message_handler: Arc<dyn MessageHandler>,
     ) -> Self {
         Self {
@@ -178,7 +178,7 @@ mod tests {
 
     struct TestSocket {
         sent: Arc<Mutex<Vec<String>>>,
-        inbound: mpsc::UnboundedReceiver<String>,
+        inbound: mpsc::Receiver<String>,
     }
 
     #[async_trait]
@@ -219,9 +219,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_connection_sends_outbound_and_handles_inbound() {
-        let (out_tx, out_rx) = mpsc::unbounded_channel::<String>();
+        let (out_tx, out_rx) = mpsc::channel::<String>(4);
 
-        let (in_tx, in_rx) = mpsc::unbounded_channel::<String>();
+        let (in_tx, in_rx) = mpsc::channel::<String>(4);
         let sent = Arc::new(Mutex::new(Vec::new()));
         let socket = TestSocket {
             sent: sent.clone(),
@@ -247,10 +247,10 @@ mod tests {
         tokio::task::yield_now().await;
 
         // Send outbound to client
-        out_tx.send("hello-out".to_string()).unwrap();
+        out_tx.send("hello-out".to_string()).await.unwrap();
 
         // Send inbound from client
-        in_tx.send("hello-in".to_string()).unwrap();
+        in_tx.send("hello-in".to_string()).await.unwrap();
 
         // Wait until outbound has been sent and inbound handled
         let _ = tokio::time::timeout(std::time::Duration::from_millis(50), async {

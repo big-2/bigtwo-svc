@@ -17,6 +17,13 @@ use crate::websockets::messages::{MessageType, WebSocketMessage};
 
 use super::socket::{Connection, MessageHandler};
 
+fn outbound_channel_capacity() -> usize {
+    std::env::var("WEBSOCKET_OUTBOUND_CHANNEL_CAPACITY")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(128)
+}
+
 /// Message handler for receiving WebSocket messages from the client
 pub struct WebsocketReceiveHandler {
     event_bus: EventBus,
@@ -247,7 +254,7 @@ async fn handle_websocket_connection(
     );
 
     // Create the outbound channel (app -> client)
-    let (outbound_sender, outbound_receiver) = mpsc::unbounded_channel::<String>();
+    let (outbound_sender, outbound_receiver) = mpsc::channel::<String>(outbound_channel_capacity());
 
     // Register connection with the connection manager
     // Resolve stable player UUID from session id for connection identity
@@ -323,7 +330,7 @@ async fn handle_websocket_connection(
             room.get_connected_players().clone(),
         );
         if let Ok(message_json) = serde_json::to_string(&initial_message) {
-            let _ = outbound_sender.send(message_json);
+            let _ = outbound_sender.try_send(message_json);
             debug!(
                 room_id = %room_id,
                 username = %username,
@@ -359,7 +366,7 @@ async fn handle_websocket_connection(
         } else {
             for hydration_message in hydration_messages {
                 if let Ok(message_json) = serde_json::to_string(&hydration_message) {
-                    let _ = outbound_sender.send(message_json);
+                    let _ = outbound_sender.send(message_json).await;
                     debug!(
                         room_id = %room_id,
                         username = %username,

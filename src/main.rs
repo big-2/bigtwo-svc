@@ -34,7 +34,9 @@ use crate::stats::{
 };
 use crate::websockets::InMemoryConnectionManager;
 use crate::{
-    event::EventBus, game::GameService, user::mapping_service::InMemoryPlayerMappingService,
+    event::EventBus,
+    game::{repository::PostgresGameRepository, GameService},
+    user::mapping_service::InMemoryPlayerMappingService,
 };
 
 #[tokio::main]
@@ -96,7 +98,16 @@ async fn main() {
     let room_repository = Arc::new(InMemoryRoomRepository::new());
     let event_bus = EventBus::new();
     let connection_manager = Arc::new(InMemoryConnectionManager::new());
-    let game_service = Arc::new(GameService::new(player_mapping.clone()));
+    let game_service = if let Some(pool) = &postgres_pool {
+        info!("Using PostgreSQL active game storage (persistent across restarts)");
+        Arc::new(GameService::with_repository(
+            Arc::new(PostgresGameRepository::new(pool.clone())),
+            player_mapping.clone(),
+        ))
+    } else {
+        info!("🔄 Falling back to in-memory active game storage");
+        Arc::new(GameService::new(player_mapping.clone()))
+    };
     let bot_manager = Arc::new(BotManager::new());
 
     // Stats system: in-memory tracking of per-room game statistics
@@ -132,7 +143,16 @@ async fn main() {
         room_repository.clone(),
         game_service.clone(),
         Arc::new(event_bus.clone()),
+        bot_manager.clone(),
+        player_mapping.clone(),
+        stats_service.clone(),
         cleanup_config,
+    ));
+
+    let session_cleanup_config = session::cleanup_task::CleanupConfig::default();
+    tokio::spawn(session::cleanup_task::start_cleanup_task(
+        session_service.clone(),
+        session_cleanup_config,
     ));
 
     let app_state = AppState::builder()

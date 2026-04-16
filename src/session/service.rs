@@ -168,7 +168,22 @@ impl SessionService {
     pub async fn cleanup_expired_sessions(&self) -> Result<u64, AppError> {
         debug!("Starting cleanup of expired sessions");
 
-        let removed_count = self.repository.cleanup_expired_sessions().await?;
+        let expired_session_ids = self.repository.cleanup_expired_session_ids().await?;
+
+        for session_id in &expired_session_ids {
+            let player_uuid = {
+                let mut session_uuid_map = self.session_to_player_uuid.write().await;
+                session_uuid_map.remove(session_id)
+            };
+
+            if let Some(player_uuid) = player_uuid {
+                self.player_mapping.remove_player(&player_uuid).await;
+            } else {
+                self.player_mapping.remove_player(session_id).await;
+            }
+        }
+
+        let removed_count = expired_session_ids.len() as u64;
 
         debug!(
             removed_sessions = removed_count,

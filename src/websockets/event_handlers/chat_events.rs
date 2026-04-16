@@ -68,7 +68,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl ConnectionManager for CollectingConnMgr {
-        async fn add_connection(&self, _uuid: String, _sender: mpsc::UnboundedSender<String>) {}
+        async fn add_connection(&self, _uuid: String, _sender: mpsc::Sender<String>) {}
         async fn remove_connection(&self, _uuid: &str) {}
         async fn send_to_player(&self, uuid: &str, message: &str) {
             self.0

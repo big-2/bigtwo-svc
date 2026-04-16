@@ -6,6 +6,7 @@ use crate::{
     event::{RoomEvent, RoomEventError, RoomEventHandler},
     game::GameService,
     room::service::RoomService,
+    stats::service::StatsService,
     user::PlayerMappingService,
     websockets::connection_manager::ConnectionManager,
 };
@@ -196,6 +197,7 @@ impl WebSocketRoomSubscriber {
         player_mapping: Arc<dyn PlayerMappingService>,
         event_bus: crate::event::EventBus,
         bot_manager: Arc<crate::bot::BotManager>,
+        stats_service: Arc<StatsService>,
     ) -> Self {
         let room_handlers = RoomEventHandlers::new(
             Arc::clone(&room_service),
@@ -221,6 +223,8 @@ impl WebSocketRoomSubscriber {
             Arc::clone(&player_mapping),
             event_bus.clone(),
             bot_manager,
+            Arc::clone(&game_service),
+            stats_service,
         );
 
         Self {
