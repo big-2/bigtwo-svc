@@ -16,6 +16,7 @@ pub trait SessionRepository {
     #[allow(dead_code)] // Trait method for session updates
     async fn update_session(&self, session: &SessionModel) -> Result<(), AppError>;
     async fn delete_session(&self, session_id: &str) -> Result<(), AppError>;
+    async fn cleanup_expired_session_ids(&self) -> Result<Vec<String>, AppError>;
     #[allow(dead_code)] // Trait method for session cleanup
     async fn cleanup_expired_sessions(&self) -> Result<u64, AppError>;
 }
@@ -138,18 +139,29 @@ impl SessionRepository for InMemorySessionRepository {
     async fn cleanup_expired_sessions(&self) -> Result<u64, AppError> {
         debug!("Cleaning up expired sessions from memory");
 
-        let mut sessions = self.sessions.lock().unwrap();
-        let now = Utc::now();
-        let initial_count = sessions.len();
-
-        sessions.retain(|_, session| session.expires_at > now);
-
-        let removed_count = initial_count - sessions.len();
+        let removed_count = self.cleanup_expired_session_ids().await?.len();
         debug!(
             expired_sessions_removed = removed_count,
             "Expired sessions cleaned up from memory"
         );
         Ok(removed_count as u64)
+    }
+
+    #[instrument(skip(self))]
+    async fn cleanup_expired_session_ids(&self) -> Result<Vec<String>, AppError> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let now = Utc::now();
+        let expired_session_ids: Vec<String> = sessions
+            .iter()
+            .filter(|(_, session)| session.expires_at <= now)
+            .map(|(session_id, _)| session_id.clone())
+            .collect();
+
+        for session_id in &expired_session_ids {
+            sessions.remove(session_id);
+        }
+
+        Ok(expired_session_ids)
     }
 }
 
@@ -278,22 +290,27 @@ impl SessionRepository for PostgresSessionRepository {
     async fn cleanup_expired_sessions(&self) -> Result<u64, AppError> {
         debug!("Cleaning up expired sessions from database");
 
+        let rows_affected = self.cleanup_expired_session_ids().await?.len() as u64;
+        debug!(
+            expired_sessions_removed = rows_affected,
+            "Expired sessions cleaned up"
+        );
+        Ok(rows_affected)
+    }
+
+    #[instrument(skip(self))]
+    async fn cleanup_expired_session_ids(&self) -> Result<Vec<String>, AppError> {
         let now = Utc::now();
-        let result = sqlx::query("DELETE FROM user_sessions WHERE expires_at < $1")
+        let rows = sqlx::query("DELETE FROM user_sessions WHERE expires_at < $1 RETURNING id")
             .bind(now)
-            .execute(&self.pool)
+            .fetch_all(&self.pool)
             .await
             .map_err(|e| {
                 warn!(error = %e, "Failed to cleanup expired sessions");
                 AppError::DatabaseError(e.to_string())
             })?;
 
-        let rows_affected = result.rows_affected();
-        debug!(
-            expired_sessions_removed = rows_affected,
-            "Expired sessions cleaned up"
-        );
-        Ok(rows_affected)
+        Ok(rows.into_iter().map(|row| row.get("id")).collect())
     }
 }
 

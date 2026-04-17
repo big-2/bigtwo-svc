@@ -52,6 +52,7 @@ pub async fn create_room(
         Arc::clone(&state.player_mapping),
         state.event_bus.clone(),
         Arc::clone(&state.bot_manager),
+        Arc::clone(&state.stats_service),
     ));
 
     let room_subscription = RoomSubscription::new(

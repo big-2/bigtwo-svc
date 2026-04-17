@@ -13,5 +13,5 @@ pub use service::GameService;
 mod cards;
 mod core;
 mod game_room_subscriber;
-mod repository;
+pub(crate) mod repository;
 mod service;

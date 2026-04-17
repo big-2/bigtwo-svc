@@ -76,7 +76,7 @@ impl MockConnectionManager {
 
 #[async_trait]
 impl ConnectionManager for MockConnectionManager {
-    async fn add_connection(&self, uuid: String, _sender: mpsc::UnboundedSender<String>) {
+    async fn add_connection(&self, uuid: String, _sender: mpsc::Sender<String>) {
         self.add_connected_player(&uuid).await;
     }
 

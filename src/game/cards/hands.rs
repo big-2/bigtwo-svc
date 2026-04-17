@@ -142,10 +142,8 @@ pub struct StraightHand {
 impl StraightHand {
     pub fn new(cards: Vec<Card>) -> Self {
         assert!(!cards.is_empty(), "StraightHand requires at least one card");
-        let high_card = *cards
-            .iter()
-            .max()
-            .expect("StraightHand should have cards for max calculation");
+        let high_card = FiveCardHand::straight_high_card(&cards)
+            .expect("StraightHand should only be constructed from valid straights");
         Self { cards, high_card }
     }
 }
@@ -307,10 +305,8 @@ pub struct StraightFlushHand {
 impl StraightFlushHand {
     pub fn new(cards: Vec<Card>) -> Self {
         let suit = cards[0].suit; // All cards have same suit
-        let high_card = *cards
-            .iter()
-            .max()
-            .expect("StraightFlushHand should have cards for max calculation");
+        let high_card = FiveCardHand::straight_high_card(&cards)
+            .expect("StraightFlushHand should only be constructed from valid straights");
         Self {
             cards,
             suit,
@@ -398,7 +394,12 @@ impl FiveCardHand {
             return true;
         }
 
-        // Special case 2: Ace-high straight (10-J-Q-K-A)
+        // Special case 2: Two-low straight (2-3-4-5-6)
+        if ranks == vec![Rank::Three, Rank::Four, Rank::Five, Rank::Six, Rank::Two] {
+            return true;
+        }
+
+        // Special case 3: Ace-high straight (10-J-Q-K-A)
         // Ace acts as value 14 (after King)
         if ranks == vec![Rank::Ten, Rank::Jack, Rank::Queen, Rank::King, Rank::Ace] {
             return true;
@@ -422,6 +423,28 @@ impl FiveCardHand {
         }
 
         true
+    }
+
+    fn straight_high_card(cards: &[Card]) -> Option<Card> {
+        let mut ranks: Vec<Rank> = cards.iter().map(|c| c.rank).collect();
+        ranks.sort();
+
+        let high_rank = if ranks == vec![Rank::Three, Rank::Four, Rank::Five, Rank::Ace, Rank::Two]
+        {
+            Rank::Five
+        } else if ranks == vec![Rank::Three, Rank::Four, Rank::Five, Rank::Six, Rank::Two] {
+            Rank::Six
+        } else if ranks == vec![Rank::Ten, Rank::Jack, Rank::Queen, Rank::King, Rank::Ace] {
+            Rank::Ace
+        } else if !Self::is_straight(cards) {
+            return None;
+        } else {
+            *ranks
+                .last()
+                .expect("straight_high_card requires at least one card")
+        };
+
+        cards.iter().copied().find(|card| card.rank == high_rank)
     }
 
     fn count_ranks(cards: &[Card]) -> std::collections::HashMap<Rank, usize> {
@@ -668,6 +691,19 @@ mod tests {
     }
 
     #[test]
+    fn test_construct_valid_straight_with_two() {
+        let straight = Hand::from_cards(&[
+            Card::new(Rank::Two, Suit::Hearts),
+            Card::new(Rank::Three, Suit::Spades),
+            Card::new(Rank::Four, Suit::Diamonds),
+            Card::new(Rank::Five, Suit::Clubs),
+            Card::new(Rank::Six, Suit::Hearts),
+        ]);
+
+        assert!(straight.is_ok());
+    }
+
+    #[test]
     fn test_construct_valid_ace_high_straight() {
         let straight = Hand::from_cards(&[
             Card::new(Rank::Ten, Suit::Hearts),
@@ -761,6 +797,13 @@ mod tests {
         Card::new(Rank::Queen, Suit::Clubs),
         Card::new(Rank::King, Suit::Hearts),
     ])] // 9-10-J-Q-K
+    #[case(vec![
+        Card::new(Rank::Two, Suit::Hearts),
+        Card::new(Rank::Three, Suit::Spades),
+        Card::new(Rank::Four, Suit::Diamonds),
+        Card::new(Rank::Five, Suit::Clubs),
+        Card::new(Rank::Six, Suit::Hearts),
+    ])] // 2-3-4-5-6
     fn test_valid_normal_straights(#[case] cards: Vec<Card>) {
         let result = Hand::from_cards(&cards);
         assert!(result.is_ok());
@@ -800,6 +843,30 @@ mod tests {
         .unwrap();
 
         assert_eq!(straight.can_beat(&other_hand), expected);
+    }
+
+    #[test]
+    fn test_two_low_straight_beats_ace_low_straight() {
+        let ace_low = Hand::from_cards(&[
+            Card::new(Rank::Ace, Suit::Hearts),
+            Card::new(Rank::Two, Suit::Spades),
+            Card::new(Rank::Three, Suit::Diamonds),
+            Card::new(Rank::Four, Suit::Clubs),
+            Card::new(Rank::Five, Suit::Hearts),
+        ])
+        .unwrap();
+
+        let two_low = Hand::from_cards(&[
+            Card::new(Rank::Two, Suit::Hearts),
+            Card::new(Rank::Three, Suit::Spades),
+            Card::new(Rank::Four, Suit::Diamonds),
+            Card::new(Rank::Five, Suit::Clubs),
+            Card::new(Rank::Six, Suit::Hearts),
+        ])
+        .unwrap();
+
+        assert!(two_low.can_beat(&ace_low));
+        assert!(!ace_low.can_beat(&two_low));
     }
 
     #[rstest]

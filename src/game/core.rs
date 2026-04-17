@@ -43,6 +43,8 @@ pub enum GameError {
     HandError(HandError),
     #[error("First turn must include the 3 of diamonds")]
     FirstTurnMustIncludeThreeOfDiamonds,
+    #[error("Game storage error: {0}")]
+    StorageError(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

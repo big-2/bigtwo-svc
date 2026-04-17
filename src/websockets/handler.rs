@@ -17,6 +17,20 @@ use crate::websockets::messages::{MessageType, WebSocketMessage};
 
 use super::socket::{Connection, MessageHandler};
 
+fn outbound_channel_capacity() -> usize {
+    let configured = std::env::var("WEBSOCKET_OUTBOUND_CHANNEL_CAPACITY")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(128);
+
+    if configured == 0 {
+        warn!("WEBSOCKET_OUTBOUND_CHANNEL_CAPACITY must be at least 1; falling back to 128");
+        128
+    } else {
+        configured
+    }
+}
+
 /// Message handler for receiving WebSocket messages from the client
 pub struct WebsocketReceiveHandler {
     event_bus: EventBus,
@@ -246,8 +260,10 @@ async fn handle_websocket_connection(
         "WebSocket connection established"
     );
 
+    let mut pending_outbound_messages = Vec::new();
+
     // Create the outbound channel (app -> client)
-    let (outbound_sender, outbound_receiver) = mpsc::unbounded_channel::<String>();
+    let (outbound_sender, outbound_receiver) = mpsc::channel::<String>(outbound_channel_capacity());
 
     // Register connection with the connection manager
     // Resolve stable player UUID from session id for connection identity
@@ -323,7 +339,7 @@ async fn handle_websocket_connection(
             room.get_connected_players().clone(),
         );
         if let Ok(message_json) = serde_json::to_string(&initial_message) {
-            let _ = outbound_sender.send(message_json);
+            pending_outbound_messages.push(message_json);
             debug!(
                 room_id = %room_id,
                 username = %username,
@@ -359,7 +375,7 @@ async fn handle_websocket_connection(
         } else {
             for hydration_message in hydration_messages {
                 if let Ok(message_json) = serde_json::to_string(&hydration_message) {
-                    let _ = outbound_sender.send(message_json);
+                    pending_outbound_messages.push(message_json);
                     debug!(
                         room_id = %room_id,
                         username = %username,
@@ -386,21 +402,42 @@ async fn handle_websocket_connection(
         message_handler,
     );
 
+    let connection_task = tokio::spawn(async move { connection.run().await });
+
+    for message_json in pending_outbound_messages {
+        if outbound_sender.send(message_json).await.is_err() {
+            debug!(
+                room_id = %room_id,
+                username = %username,
+                "Connection closed before queued outbound messages were delivered"
+            );
+            break;
+        }
+    }
+
     // Run the connection until disconnect
-    match connection.run().await {
-        Ok(()) => {
+    match connection_task.await {
+        Ok(Ok(())) => {
             debug!(
                 room_id = %room_id,
                 username = %username,
                 "WebSocket connection closed cleanly"
             );
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             warn!(
                 room_id = %room_id,
                 username = %username,
                 error = ?e,
                 "WebSocket connection error"
+            );
+        }
+        Err(e) => {
+            warn!(
+                room_id = %room_id,
+                username = %username,
+                error = %e,
+                "WebSocket connection task failed"
             );
         }
     }

@@ -324,7 +324,7 @@ mod tests {
 
     #[async_trait]
     impl ConnectionManager for TestConnectionManager {
-        async fn add_connection(&self, _uuid: String, _sender: mpsc::UnboundedSender<String>) {}
+        async fn add_connection(&self, _uuid: String, _sender: mpsc::Sender<String>) {}
 
         async fn remove_connection(&self, _uuid: &str) {}
 

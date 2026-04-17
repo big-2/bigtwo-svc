@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Row};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
@@ -139,16 +139,35 @@ struct PlayTypeBreakdown {
 }
 
 #[derive(Debug, Default)]
+struct InMemoryCompletedGamesStore {
+    games: HashMap<String, GameResult>,
+    order: VecDeque<String>,
+}
+
+fn read_in_memory_history_limit() -> usize {
+    std::env::var("IN_MEMORY_COMPLETED_GAME_HISTORY_LIMIT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(512)
+}
+
+#[derive(Debug, Default)]
 pub struct InMemoryGameHistoryRepository {
-    games: Arc<RwLock<HashMap<String, GameResult>>>,
+    completed_games: Arc<RwLock<InMemoryCompletedGamesStore>>,
     profile_aggregates: Arc<RwLock<HashMap<String, InMemoryProfileAggregate>>>,
+    max_completed_games: usize,
 }
 
 impl InMemoryGameHistoryRepository {
     pub fn new() -> Self {
+        Self::with_limit(read_in_memory_history_limit())
+    }
+
+    pub fn with_limit(max_completed_games: usize) -> Self {
         Self {
-            games: Arc::new(RwLock::new(HashMap::new())),
+            completed_games: Arc::new(RwLock::new(InMemoryCompletedGamesStore::default())),
             profile_aggregates: Arc::new(RwLock::new(HashMap::new())),
+            max_completed_games,
         }
     }
 }
@@ -157,18 +176,21 @@ impl InMemoryGameHistoryRepository {
 impl GameHistoryRepository for InMemoryGameHistoryRepository {
     async fn record_completed_game(&self, game_result: &GameResult) -> Result<bool, StatsError> {
         {
-            let games = self.games.read().await;
-            if games.contains_key(&game_result.game_id) {
+            let mut completed_games = self.completed_games.write().await;
+            if completed_games.games.contains_key(&game_result.game_id) {
                 return Ok(false);
             }
-        }
 
-        {
-            let mut games = self.games.write().await;
-            if games.contains_key(&game_result.game_id) {
-                return Ok(false);
+            completed_games
+                .games
+                .insert(game_result.game_id.clone(), game_result.clone());
+            completed_games.order.push_back(game_result.game_id.clone());
+
+            while completed_games.games.len() > self.max_completed_games {
+                if let Some(oldest_game_id) = completed_games.order.pop_front() {
+                    completed_games.games.remove(&oldest_game_id);
+                }
             }
-            games.insert(game_result.game_id.clone(), game_result.clone());
         }
 
         let play_breakdown_by_player = calculate_play_type_breakdown(game_result);
@@ -285,8 +307,9 @@ impl GameHistoryRepository for InMemoryGameHistoryRepository {
         before: Option<DateTime<Utc>>,
     ) -> Result<PlayerRecentGamesResponse, StatsError> {
         let before = before.unwrap_or_else(Utc::now);
-        let games = self.games.read().await;
-        let mut relevant_games: Vec<_> = games
+        let completed_games = self.completed_games.read().await;
+        let mut relevant_games: Vec<_> = completed_games
+            .games
             .values()
             .filter(|game| {
                 game.completed_at < before && game.players.iter().any(|p| p.uuid == player_uuid)
@@ -332,8 +355,8 @@ impl GameHistoryRepository for InMemoryGameHistoryRepository {
         player_uuid: &str,
         game_id: &str,
     ) -> Result<Option<CompletedGameDetailResponse>, StatsError> {
-        let games = self.games.read().await;
-        let Some(game) = games.get(game_id) else {
+        let completed_games = self.completed_games.read().await;
+        let Some(game) = completed_games.games.get(game_id) else {
             return Ok(None);
         };
         if !game.players.iter().any(|player| player.uuid == player_uuid) {
@@ -1205,6 +1228,60 @@ mod tests {
         assert_eq!(stats.play_style.total_triple_plays, 1);
         assert_eq!(stats.play_style.total_five_card_plays, 1);
         assert_eq!(stats.play_style.total_passes, 1);
+    }
+
+    #[tokio::test]
+    async fn in_memory_history_evicts_old_games_when_limit_is_reached() {
+        let repo = InMemoryGameHistoryRepository::with_limit(1);
+        let base_time = Utc::now() - chrono::Duration::minutes(2);
+        let first_game = GameResult {
+            started_at: base_time - chrono::Duration::seconds(30),
+            completed_at: base_time,
+            ..sample_game(
+                "room-1",
+                "player-1",
+                vec![
+                    ("player-1".to_string(), 0, 0, 0),
+                    ("player-2".to_string(), 5, 5, 5),
+                ],
+            )
+        };
+        let second_game = GameResult {
+            game_id: "room-1:2".to_string(),
+            started_at: base_time + chrono::Duration::seconds(30),
+            completed_at: base_time + chrono::Duration::minutes(1),
+            ..sample_game(
+                "room-1",
+                "player-2",
+                vec![
+                    ("player-1".to_string(), 4, 4, 4),
+                    ("player-2".to_string(), 0, 0, 0),
+                ],
+            )
+        };
+
+        assert!(repo.record_completed_game(&first_game).await.unwrap());
+        assert!(repo.record_completed_game(&second_game).await.unwrap());
+
+        let recent_games = repo
+            .get_recent_games_for_player("player-1", 10, None)
+            .await
+            .unwrap();
+        assert_eq!(recent_games.games.len(), 1);
+        assert_eq!(recent_games.games[0].game_id, second_game.game_id);
+
+        let first_game_detail = repo
+            .get_completed_game_for_player("player-1", &first_game.game_id)
+            .await
+            .unwrap();
+        assert!(first_game_detail.is_none());
+
+        let stats = repo
+            .get_player_profile_stats("player-1", "Player 1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stats.summary.games_played, 2);
     }
 
     #[tokio::test]
