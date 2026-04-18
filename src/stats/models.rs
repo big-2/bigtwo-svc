@@ -55,6 +55,25 @@ pub struct PlayerProfileStatsResponse {
     pub recent_form: PlayerRecentForm,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StatsGameFilter {
+    #[default]
+    All,
+    HumanOnly,
+    WithBots,
+}
+
+impl StatsGameFilter {
+    pub fn matches_game(self, had_bots: bool) -> bool {
+        match self {
+            Self::All => true,
+            Self::HumanOnly => !had_bots,
+            Self::WithBots => had_bots,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PlayerStatsSummary {
     pub games_played: u64,
