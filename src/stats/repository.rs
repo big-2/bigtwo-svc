@@ -13,7 +13,7 @@ use super::{
         CompletedGameDetailMove, CompletedGameDetailPlayer, CompletedGameDetailResponse,
         GameOpponentSummary, PlayerPlayStyle, PlayerProfileStatsResponse, PlayerRecentForm,
         PlayerRecentGameSummary, PlayerRecentGamesResponse, PlayerRecentWindow, PlayerSplitSummary,
-        PlayerStatsSplits, PlayerStatsSummary, RoomStats,
+        PlayerStatsSplits, PlayerStatsSummary, RoomStats, StatsGameFilter,
     },
     GameResult, StatsError,
 };
@@ -32,12 +32,14 @@ pub trait GameHistoryRepository: Send + Sync {
         &self,
         player_uuid: &str,
         display_name: &str,
+        filter: StatsGameFilter,
     ) -> Result<Option<PlayerProfileStatsResponse>, StatsError>;
     async fn get_recent_games_for_player(
         &self,
         player_uuid: &str,
         limit: u32,
         before: Option<DateTime<Utc>>,
+        filter: StatsGameFilter,
     ) -> Result<PlayerRecentGamesResponse, StatsError>;
     async fn get_completed_game_for_player(
         &self,
@@ -114,6 +116,7 @@ impl StatsRepository for InMemoryStatsRepository {
 }
 
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 struct InMemoryProfileAggregate {
     games_played: u64,
     wins: u64,
@@ -169,6 +172,18 @@ impl InMemoryGameHistoryRepository {
             profile_aggregates: Arc::new(RwLock::new(HashMap::new())),
             max_completed_games,
         }
+    }
+
+    async fn list_games_for_player(&self, player_uuid: &str) -> Vec<GameResult> {
+        let completed_games = self.completed_games.read().await;
+        let mut relevant_games: Vec<_> = completed_games
+            .games
+            .values()
+            .filter(|game| game.players.iter().any(|p| p.uuid == player_uuid))
+            .cloned()
+            .collect();
+        relevant_games.sort_by_key(|game| game.completed_at);
+        relevant_games
     }
 }
 
@@ -233,70 +248,39 @@ impl GameHistoryRepository for InMemoryGameHistoryRepository {
         &self,
         player_uuid: &str,
         display_name: &str,
+        filter: StatsGameFilter,
     ) -> Result<Option<PlayerProfileStatsResponse>, StatsError> {
-        let aggregate = {
-            let aggregates = self.profile_aggregates.read().await;
-            aggregates.get(player_uuid).cloned()
-        };
-        let Some(aggregate) = aggregate else {
+        let all_games = self.list_games_for_player(player_uuid).await;
+        if all_games.is_empty() {
             return Ok(None);
-        };
+        }
 
-        let recent_games = self
-            .get_recent_games_for_player(player_uuid, 25, None)
-            .await?
-            .games;
-
-        let wins_last_10 = recent_games
+        let filtered_games: Vec<_> = all_games
             .iter()
-            .take(10)
+            .filter(|game| filter.matches_game(game.had_bots))
+            .cloned()
+            .collect();
+        let wins = filtered_games
+            .iter()
             .filter(|game| game.winner_uuid == player_uuid)
             .count() as u64;
-        let wins_last_25 = recent_games
-            .iter()
-            .take(25)
-            .filter(|game| game.winner_uuid == player_uuid)
-            .count() as u64;
+        let games_played = filtered_games.len() as u64;
+        let (current_win_streak, best_win_streak) =
+            build_streaks_from_games(&filtered_games, player_uuid);
 
         Ok(Some(PlayerProfileStatsResponse {
             player_uuid: player_uuid.to_string(),
             display_name: display_name.to_string(),
             summary: PlayerStatsSummary {
-                games_played: aggregate.games_played,
-                wins: aggregate.wins,
-                win_rate: ratio(aggregate.wins, aggregate.games_played),
-                current_win_streak: aggregate.current_win_streak,
-                best_win_streak: aggregate.best_win_streak,
+                games_played,
+                wins,
+                win_rate: ratio(wins, games_played),
+                current_win_streak,
+                best_win_streak,
             },
-            play_style: PlayerPlayStyle {
-                total_passes: aggregate.total_passes,
-                total_single_plays: aggregate.total_single_plays,
-                total_pair_plays: aggregate.total_pair_plays,
-                total_triple_plays: aggregate.total_triple_plays,
-                total_five_card_plays: aggregate.total_five_card_plays,
-            },
-            splits: PlayerStatsSplits {
-                human_only: PlayerSplitSummary {
-                    games_played: aggregate.human_games_played,
-                    wins: aggregate.human_wins,
-                    win_rate: ratio(aggregate.human_wins, aggregate.human_games_played),
-                },
-                with_bots: PlayerSplitSummary {
-                    games_played: aggregate.bot_games_played,
-                    wins: aggregate.bot_wins,
-                    win_rate: ratio(aggregate.bot_wins, aggregate.bot_games_played),
-                },
-            },
-            recent_form: PlayerRecentForm {
-                last_10: PlayerRecentWindow {
-                    wins: wins_last_10,
-                    win_rate: ratio(wins_last_10, recent_games.len().min(10) as u64),
-                },
-                last_25: PlayerRecentWindow {
-                    wins: wins_last_25,
-                    win_rate: ratio(wins_last_25, recent_games.len().min(25) as u64),
-                },
-            },
+            play_style: build_in_memory_play_style(&filtered_games, player_uuid),
+            splits: build_split_summary(&all_games, player_uuid),
+            recent_form: build_recent_form_from_games(&filtered_games, player_uuid),
         }))
     }
 
@@ -305,6 +289,7 @@ impl GameHistoryRepository for InMemoryGameHistoryRepository {
         player_uuid: &str,
         limit: u32,
         before: Option<DateTime<Utc>>,
+        filter: StatsGameFilter,
     ) -> Result<PlayerRecentGamesResponse, StatsError> {
         let before = before.unwrap_or_else(Utc::now);
         let completed_games = self.completed_games.read().await;
@@ -312,7 +297,9 @@ impl GameHistoryRepository for InMemoryGameHistoryRepository {
             .games
             .values()
             .filter(|game| {
-                game.completed_at < before && game.players.iter().any(|p| p.uuid == player_uuid)
+                game.completed_at < before
+                    && filter.matches_game(game.had_bots)
+                    && game.players.iter().any(|p| p.uuid == player_uuid)
             })
             .cloned()
             .collect();
@@ -371,6 +358,14 @@ pub struct PostgresGameHistoryRepository {
     pool: PgPool,
 }
 
+#[derive(Debug, Clone)]
+struct PlayerHistoryRow {
+    won: bool,
+    passes: u64,
+    completed_at: DateTime<Utc>,
+    had_bots: bool,
+}
+
 impl PostgresGameHistoryRepository {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
@@ -379,6 +374,7 @@ impl PostgresGameHistoryRepository {
     async fn get_play_type_breakdown_from_moves(
         &self,
         player_uuid: &str,
+        filter: StatsGameFilter,
     ) -> Result<PlayTypeBreakdown, StatsError> {
         let row = sqlx::query(
             r#"
@@ -388,11 +384,14 @@ impl PostgresGameHistoryRepository {
                 COALESCE(SUM(CASE WHEN jsonb_array_length(cards) = 3 THEN 1 ELSE 0 END), 0) AS total_triple_plays,
                 COALESCE(SUM(CASE WHEN jsonb_array_length(cards) = 5 THEN 1 ELSE 0 END), 0) AS total_five_card_plays
             FROM completed_game_moves
+            JOIN completed_games ON completed_games.game_id = completed_game_moves.game_id
             WHERE player_uuid = $1
               AND action_type = 'play'
+              AND ($2::boolean IS NULL OR completed_games.had_bots = $2)
             "#,
         )
         .bind(player_uuid)
+        .bind(filter.as_optional_had_bots())
         .fetch_one(&self.pool)
         .await
         .map_err(|e| StatsError::Repository(e.to_string()))?;
@@ -403,6 +402,42 @@ impl PostgresGameHistoryRepository {
             triple_plays: row.get::<i64, _>("total_triple_plays") as u64,
             five_card_plays: row.get::<i64, _>("total_five_card_plays") as u64,
         })
+    }
+
+    async fn fetch_player_history_rows(
+        &self,
+        player_uuid: &str,
+        filter: StatsGameFilter,
+    ) -> Result<Vec<PlayerHistoryRow>, StatsError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                cgp.won,
+                cgp.passes,
+                cg.completed_at,
+                cg.had_bots
+            FROM completed_game_players cgp
+            JOIN completed_games cg ON cg.game_id = cgp.game_id
+            WHERE cgp.player_uuid = $1
+              AND ($2::boolean IS NULL OR cg.had_bots = $2)
+            ORDER BY cg.completed_at DESC
+            "#,
+        )
+        .bind(player_uuid)
+        .bind(filter.as_optional_had_bots())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StatsError::Repository(e.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| PlayerHistoryRow {
+                won: row.get("won"),
+                passes: row.get::<i64, _>("passes") as u64,
+                completed_at: row.get("completed_at"),
+                had_bots: row.get("had_bots"),
+            })
+            .collect())
     }
 }
 
@@ -634,90 +669,28 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
         &self,
         player_uuid: &str,
         display_name: &str,
+        filter: StatsGameFilter,
     ) -> Result<Option<PlayerProfileStatsResponse>, StatsError> {
-        let row = sqlx::query(
-            r#"
-            SELECT
-                games_played,
-                wins,
-                current_win_streak,
-                best_win_streak,
-                total_passes,
-                total_plays,
-                total_single_plays,
-                total_pair_plays,
-                total_triple_plays,
-                total_five_card_plays,
-                human_games_played,
-                human_wins,
-                bot_games_played,
-                bot_wins
-            FROM player_profile_stats
-            WHERE player_uuid = $1
-            "#,
-        )
-        .bind(player_uuid)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| StatsError::Repository(e.to_string()))?;
-
-        let Some(row) = row else {
+        let history_rows = self
+            .fetch_player_history_rows(player_uuid, StatsGameFilter::All)
+            .await?;
+        if history_rows.is_empty() {
             return Ok(None);
-        };
+        }
 
-        let recent_rows = sqlx::query(
-            r#"
-            SELECT won
-            FROM completed_game_players
-            WHERE player_uuid = $1
-            ORDER BY completed_at DESC
-            LIMIT 25
-            "#,
-        )
-        .bind(player_uuid)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| StatsError::Repository(e.to_string()))?;
-
-        let games_played = row.get::<i64, _>("games_played") as u64;
-        let wins = row.get::<i64, _>("wins") as u64;
-        let total_passes = row.get::<i64, _>("total_passes") as u64;
-        let total_plays = row.get::<i64, _>("total_plays") as u64;
-        let stored_total_single_plays = row.get::<i64, _>("total_single_plays") as u64;
-        let stored_total_pair_plays = row.get::<i64, _>("total_pair_plays") as u64;
-        let stored_total_triple_plays = row.get::<i64, _>("total_triple_plays") as u64;
-        let stored_total_five_card_plays = row.get::<i64, _>("total_five_card_plays") as u64;
-        let human_games_played = row.get::<i64, _>("human_games_played") as u64;
-        let human_wins = row.get::<i64, _>("human_wins") as u64;
-        let bot_games_played = row.get::<i64, _>("bot_games_played") as u64;
-        let bot_wins = row.get::<i64, _>("bot_wins") as u64;
-
-        let fallback_breakdown = if total_plays > 0
-            && stored_total_single_plays == 0
-            && stored_total_pair_plays == 0
-            && stored_total_triple_plays == 0
-            && stored_total_five_card_plays == 0
-        {
-            self.get_play_type_breakdown_from_moves(player_uuid).await?
-        } else {
-            PlayTypeBreakdown {
-                single_plays: stored_total_single_plays,
-                pair_plays: stored_total_pair_plays,
-                triple_plays: stored_total_triple_plays,
-                five_card_plays: stored_total_five_card_plays,
-            }
-        };
-
-        let wins_last_10 = recent_rows
+        let filtered_history: Vec<_> = history_rows
             .iter()
-            .take(10)
-            .filter(|r| r.get::<bool, _>("won"))
-            .count() as u64;
-        let wins_last_25 = recent_rows
-            .iter()
-            .take(25)
-            .filter(|r| r.get::<bool, _>("won"))
-            .count() as u64;
+            .filter(|row| filter.matches_game(row.had_bots))
+            .cloned()
+            .collect();
+        let wins = filtered_history.iter().filter(|row| row.won).count() as u64;
+        let games_played = filtered_history.len() as u64;
+        let total_passes = filtered_history.iter().map(|row| row.passes).sum();
+        let (current_win_streak, best_win_streak) =
+            build_streaks_from_history_rows(&filtered_history);
+        let play_breakdown = self
+            .get_play_type_breakdown_from_moves(player_uuid, filter)
+            .await?;
 
         Ok(Some(PlayerProfileStatsResponse {
             player_uuid: player_uuid.to_string(),
@@ -726,38 +699,18 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
                 games_played,
                 wins,
                 win_rate: ratio(wins, games_played),
-                current_win_streak: row.get::<i64, _>("current_win_streak") as u64,
-                best_win_streak: row.get::<i64, _>("best_win_streak") as u64,
+                current_win_streak,
+                best_win_streak,
             },
             play_style: PlayerPlayStyle {
                 total_passes,
-                total_single_plays: fallback_breakdown.single_plays,
-                total_pair_plays: fallback_breakdown.pair_plays,
-                total_triple_plays: fallback_breakdown.triple_plays,
-                total_five_card_plays: fallback_breakdown.five_card_plays,
+                total_single_plays: play_breakdown.single_plays,
+                total_pair_plays: play_breakdown.pair_plays,
+                total_triple_plays: play_breakdown.triple_plays,
+                total_five_card_plays: play_breakdown.five_card_plays,
             },
-            splits: PlayerStatsSplits {
-                human_only: PlayerSplitSummary {
-                    games_played: human_games_played,
-                    wins: human_wins,
-                    win_rate: ratio(human_wins, human_games_played),
-                },
-                with_bots: PlayerSplitSummary {
-                    games_played: bot_games_played,
-                    wins: bot_wins,
-                    win_rate: ratio(bot_wins, bot_games_played),
-                },
-            },
-            recent_form: PlayerRecentForm {
-                last_10: PlayerRecentWindow {
-                    wins: wins_last_10,
-                    win_rate: ratio(wins_last_10, recent_rows.len().min(10) as u64),
-                },
-                last_25: PlayerRecentWindow {
-                    wins: wins_last_25,
-                    win_rate: ratio(wins_last_25, recent_rows.len().min(25) as u64),
-                },
-            },
+            splits: build_split_summary_from_history_rows(&history_rows),
+            recent_form: build_recent_form_from_history_rows(&filtered_history),
         }))
     }
 
@@ -766,6 +719,7 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
         player_uuid: &str,
         limit: u32,
         before: Option<DateTime<Utc>>,
+        filter: StatsGameFilter,
     ) -> Result<PlayerRecentGamesResponse, StatsError> {
         let before = before.unwrap_or_else(Utc::now);
         let rows = sqlx::query(
@@ -781,12 +735,14 @@ impl GameHistoryRepository for PostgresGameHistoryRepository {
             JOIN completed_games cg ON cg.game_id = cgp.game_id
             WHERE cgp.player_uuid = $1
               AND cg.completed_at < $2
+              AND ($3::boolean IS NULL OR cg.had_bots = $3)
             ORDER BY cg.completed_at DESC
-            LIMIT $3
+            LIMIT $4
             "#,
         )
         .bind(player_uuid)
         .bind(before)
+        .bind(filter.as_optional_had_bots())
         .bind(limit as i64)
         .fetch_all(&self.pool)
         .await
@@ -1012,6 +968,16 @@ fn build_game_detail_response(game: &GameResult) -> CompletedGameDetailResponse 
     }
 }
 
+impl StatsGameFilter {
+    fn as_optional_had_bots(self) -> Option<bool> {
+        match self {
+            Self::All => None,
+            Self::HumanOnly => Some(false),
+            Self::WithBots => Some(true),
+        }
+    }
+}
+
 fn calculate_play_type_breakdown(game_result: &GameResult) -> HashMap<String, PlayTypeBreakdown> {
     let mut breakdown_by_player: HashMap<String, PlayTypeBreakdown> = HashMap::new();
 
@@ -1033,6 +999,151 @@ fn calculate_play_type_breakdown(game_result: &GameResult) -> HashMap<String, Pl
     }
 
     breakdown_by_player
+}
+
+fn build_split_summary(all_games: &[GameResult], player_uuid: &str) -> PlayerStatsSplits {
+    let human_games_played = all_games.iter().filter(|game| !game.had_bots).count() as u64;
+    let human_wins = all_games
+        .iter()
+        .filter(|game| !game.had_bots && game.winner_uuid == player_uuid)
+        .count() as u64;
+    let bot_games_played = all_games.iter().filter(|game| game.had_bots).count() as u64;
+    let bot_wins = all_games
+        .iter()
+        .filter(|game| game.had_bots && game.winner_uuid == player_uuid)
+        .count() as u64;
+
+    PlayerStatsSplits {
+        human_only: PlayerSplitSummary {
+            games_played: human_games_played,
+            wins: human_wins,
+            win_rate: ratio(human_wins, human_games_played),
+        },
+        with_bots: PlayerSplitSummary {
+            games_played: bot_games_played,
+            wins: bot_wins,
+            win_rate: ratio(bot_wins, bot_games_played),
+        },
+    }
+}
+
+fn build_split_summary_from_history_rows(rows: &[PlayerHistoryRow]) -> PlayerStatsSplits {
+    let human_games_played = rows.iter().filter(|row| !row.had_bots).count() as u64;
+    let human_wins = rows.iter().filter(|row| !row.had_bots && row.won).count() as u64;
+    let bot_games_played = rows.iter().filter(|row| row.had_bots).count() as u64;
+    let bot_wins = rows.iter().filter(|row| row.had_bots && row.won).count() as u64;
+
+    PlayerStatsSplits {
+        human_only: PlayerSplitSummary {
+            games_played: human_games_played,
+            wins: human_wins,
+            win_rate: ratio(human_wins, human_games_played),
+        },
+        with_bots: PlayerSplitSummary {
+            games_played: bot_games_played,
+            wins: bot_wins,
+            win_rate: ratio(bot_wins, bot_games_played),
+        },
+    }
+}
+
+fn build_recent_form_from_games(
+    filtered_games: &[GameResult],
+    player_uuid: &str,
+) -> PlayerRecentForm {
+    let recent_desc: Vec<_> = filtered_games.iter().rev().collect();
+    let wins_last_10 = recent_desc
+        .iter()
+        .take(10)
+        .filter(|game| game.winner_uuid == player_uuid)
+        .count() as u64;
+    let wins_last_25 = recent_desc
+        .iter()
+        .take(25)
+        .filter(|game| game.winner_uuid == player_uuid)
+        .count() as u64;
+
+    PlayerRecentForm {
+        last_10: PlayerRecentWindow {
+            wins: wins_last_10,
+            win_rate: ratio(wins_last_10, recent_desc.len().min(10) as u64),
+        },
+        last_25: PlayerRecentWindow {
+            wins: wins_last_25,
+            win_rate: ratio(wins_last_25, recent_desc.len().min(25) as u64),
+        },
+    }
+}
+
+fn build_recent_form_from_history_rows(rows: &[PlayerHistoryRow]) -> PlayerRecentForm {
+    let wins_last_10 = rows.iter().take(10).filter(|row| row.won).count() as u64;
+    let wins_last_25 = rows.iter().take(25).filter(|row| row.won).count() as u64;
+
+    PlayerRecentForm {
+        last_10: PlayerRecentWindow {
+            wins: wins_last_10,
+            win_rate: ratio(wins_last_10, rows.len().min(10) as u64),
+        },
+        last_25: PlayerRecentWindow {
+            wins: wins_last_25,
+            win_rate: ratio(wins_last_25, rows.len().min(25) as u64),
+        },
+    }
+}
+
+fn build_streaks_from_games(filtered_games: &[GameResult], player_uuid: &str) -> (u64, u64) {
+    let wins_by_game: Vec<_> = filtered_games
+        .iter()
+        .map(|game| game.winner_uuid == player_uuid)
+        .collect();
+    build_streaks_from_results(&wins_by_game)
+}
+
+fn build_streaks_from_history_rows(rows: &[PlayerHistoryRow]) -> (u64, u64) {
+    let mut ordered_rows = rows.to_vec();
+    ordered_rows.sort_by_key(|row| row.completed_at);
+    let wins_by_game: Vec<_> = ordered_rows.iter().map(|row| row.won).collect();
+    build_streaks_from_results(&wins_by_game)
+}
+
+fn build_streaks_from_results(results: &[bool]) -> (u64, u64) {
+    let mut current = 0_u64;
+    let mut best = 0_u64;
+
+    for won in results {
+        if *won {
+            current += 1;
+            best = best.max(current);
+        } else {
+            current = 0;
+        }
+    }
+
+    (current, best)
+}
+
+fn build_in_memory_play_style(filtered_games: &[GameResult], player_uuid: &str) -> PlayerPlayStyle {
+    let mut play_style = PlayerPlayStyle::default();
+
+    for game in filtered_games {
+        if let Some(player) = game
+            .players
+            .iter()
+            .find(|player| player.uuid == player_uuid)
+        {
+            play_style.total_passes += player.passes as u64;
+        }
+
+        let play_breakdown = calculate_play_type_breakdown(game);
+        if let Some(breakdown) = play_breakdown.get(player_uuid) {
+            play_style.total_single_plays += breakdown.single_plays;
+            play_style.total_pair_plays += breakdown.pair_plays;
+            play_style.total_triple_plays += breakdown.triple_plays;
+            play_style.total_five_card_plays += breakdown.five_card_plays;
+        }
+    }
+
+    play_style
 }
 
 fn ratio(numerator: u64, denominator: u64) -> f64 {
@@ -1146,7 +1257,7 @@ mod tests {
         assert!(!repo.record_completed_game(&game).await.unwrap());
 
         let stats = repo
-            .get_player_profile_stats("player-1", "Player 1")
+            .get_player_profile_stats("player-1", "Player 1", StatsGameFilter::All)
             .await
             .unwrap()
             .unwrap();
@@ -1219,7 +1330,7 @@ mod tests {
         repo.record_completed_game(&game).await.unwrap();
 
         let stats = repo
-            .get_player_profile_stats("player-1", "Player 1")
+            .get_player_profile_stats("player-1", "Player 1", StatsGameFilter::All)
             .await
             .unwrap()
             .unwrap();
@@ -1264,7 +1375,7 @@ mod tests {
         assert!(repo.record_completed_game(&second_game).await.unwrap());
 
         let recent_games = repo
-            .get_recent_games_for_player("player-1", 10, None)
+            .get_recent_games_for_player("player-1", 10, None, StatsGameFilter::All)
             .await
             .unwrap();
         assert_eq!(recent_games.games.len(), 1);
@@ -1277,11 +1388,73 @@ mod tests {
         assert!(first_game_detail.is_none());
 
         let stats = repo
-            .get_player_profile_stats("player-1", "Player 1")
+            .get_player_profile_stats("player-1", "Player 1", StatsGameFilter::All)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(stats.summary.games_played, 2);
+        assert_eq!(stats.summary.games_played, 1);
+    }
+
+    #[tokio::test]
+    async fn in_memory_history_filters_profile_stats_and_recent_games_by_game_type() {
+        let repo = InMemoryGameHistoryRepository::new();
+        let base_time = Utc::now() - chrono::Duration::minutes(3);
+
+        let human_only_game = GameResult {
+            started_at: base_time - chrono::Duration::seconds(30),
+            completed_at: base_time,
+            ..sample_game(
+                "room-human",
+                "player-1",
+                vec![
+                    ("player-1".to_string(), 0, 0, 0),
+                    ("player-2".to_string(), 5, 5, 5),
+                ],
+            )
+        };
+        let with_bots_game = GameResult {
+            game_id: "room-bot:2".to_string(),
+            room_id: "room-bot".to_string(),
+            game_number: 2,
+            started_at: base_time + chrono::Duration::minutes(1) - chrono::Duration::seconds(30),
+            completed_at: base_time + chrono::Duration::minutes(1),
+            had_bots: true,
+            ..sample_game(
+                "room-bot",
+                "player-2",
+                vec![
+                    ("player-1".to_string(), 4, 4, 4),
+                    ("bot-1".to_string(), 0, 0, 0),
+                    ("player-2".to_string(), 0, 0, 0),
+                ],
+            )
+        };
+
+        repo.record_completed_game(&human_only_game).await.unwrap();
+        repo.record_completed_game(&with_bots_game).await.unwrap();
+
+        let human_only_stats = repo
+            .get_player_profile_stats("player-1", "Player 1", StatsGameFilter::HumanOnly)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(human_only_stats.summary.games_played, 1);
+        assert_eq!(human_only_stats.summary.wins, 1);
+
+        let with_bots_stats = repo
+            .get_player_profile_stats("player-1", "Player 1", StatsGameFilter::WithBots)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(with_bots_stats.summary.games_played, 1);
+        assert_eq!(with_bots_stats.summary.wins, 0);
+
+        let recent_with_bots = repo
+            .get_recent_games_for_player("player-1", 10, None, StatsGameFilter::WithBots)
+            .await
+            .unwrap();
+        assert_eq!(recent_with_bots.games.len(), 1);
+        assert!(recent_with_bots.games[0].had_bots);
     }
 
     #[tokio::test]
@@ -1334,7 +1507,7 @@ mod tests {
         repo.record_completed_game(&game).await.unwrap();
 
         let recent = repo
-            .get_recent_games_for_player("player-1", 10, None)
+            .get_recent_games_for_player("player-1", 10, None, StatsGameFilter::All)
             .await
             .unwrap();
         assert_eq!(

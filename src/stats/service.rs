@@ -15,7 +15,7 @@ use super::{
     collectors::{CardsRemainingCollector, WinLossCollector},
     repository::{GameHistoryRepository, StatsRepository},
     CalculationContext, CollectedData, GameResult, PlayerGameResult, RoomStats, ScoreCalculator,
-    StatCollector, StatsError,
+    StatCollector, StatsError, StatsGameFilter,
 };
 
 pub struct StatsService {
@@ -128,11 +128,12 @@ impl StatsService {
         &self,
         player_uuid: &str,
         display_name: &str,
+        filter: StatsGameFilter,
     ) -> Result<Option<super::PlayerProfileStatsResponse>, StatsError> {
         match &self.game_history_repository {
             Some(repository) => {
                 repository
-                    .get_player_profile_stats(player_uuid, display_name)
+                    .get_player_profile_stats(player_uuid, display_name, filter)
                     .await
             }
             None => Ok(None),
@@ -144,11 +145,12 @@ impl StatsService {
         player_uuid: &str,
         limit: u32,
         before: Option<chrono::DateTime<chrono::Utc>>,
+        filter: StatsGameFilter,
     ) -> Result<super::PlayerRecentGamesResponse, StatsError> {
         match &self.game_history_repository {
             Some(repository) => {
                 repository
-                    .get_recent_games_for_player(player_uuid, limit, before)
+                    .get_recent_games_for_player(player_uuid, limit, before, filter)
                     .await
             }
             None => Ok(super::PlayerRecentGamesResponse {
