@@ -176,6 +176,9 @@ impl InMemoryGameHistoryRepository {
 
     async fn list_games_for_player(&self, player_uuid: &str) -> Vec<GameResult> {
         let completed_games = self.completed_games.read().await;
+        // The in-memory history store is intentionally bounded by max_completed_games.
+        // Filtered profile stats in this repository therefore reflect only the retained
+        // window, unlike the Postgres implementation which queries full persisted history.
         let mut relevant_games: Vec<_> = completed_games
             .games
             .values()
