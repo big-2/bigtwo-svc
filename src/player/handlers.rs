@@ -17,14 +17,16 @@ use crate::{
 
 #[derive(Debug, Deserialize)]
 pub struct StatsQuery {
-    pub filter: Option<StatsGameFilter>,
+    #[serde(default)]
+    pub filter: StatsGameFilter,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct RecentGamesQuery {
     pub limit: Option<u32>,
     pub before: Option<DateTime<Utc>>,
-    pub filter: Option<StatsGameFilter>,
+    #[serde(default)]
+    pub filter: StatsGameFilter,
 }
 
 pub async fn get_my_stats(
@@ -40,11 +42,7 @@ pub async fn get_my_stats(
 
     let stats = state
         .stats_service
-        .get_player_profile_stats(
-            &player_uuid,
-            &claims.username,
-            query.filter.unwrap_or_default(),
-        )
+        .get_player_profile_stats(&player_uuid, &claims.username, query.filter)
         .await
         .map_err(|e| AppError::DatabaseError(format!("Failed to get player stats: {}", e)))?;
 
@@ -67,12 +65,7 @@ pub async fn get_my_recent_games(
     let limit = query.limit.unwrap_or(20).clamp(1, 100);
     let mut games = state
         .stats_service
-        .get_recent_games_for_player(
-            &player_uuid,
-            limit,
-            query.before,
-            query.filter.unwrap_or_default(),
-        )
+        .get_recent_games_for_player(&player_uuid, limit, query.before, query.filter)
         .await
         .map_err(|e| AppError::DatabaseError(format!("Failed to get recent games: {}", e)))?;
 
