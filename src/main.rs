@@ -10,7 +10,7 @@ mod user;
 mod websockets;
 
 use axum::{
-    http::{HeaderValue, Method},
+    http::{HeaderName, HeaderValue, Method},
     middleware,
     routing::{get, post},
     Router,
@@ -38,6 +38,14 @@ use crate::{
     game::{repository::PostgresGameRepository, GameService},
     user::mapping_service::InMemoryPlayerMappingService,
 };
+
+fn allowed_cors_headers() -> [HeaderName; 3] {
+    [
+        axum::http::header::CONTENT_TYPE,
+        axum::http::header::AUTHORIZATION,
+        HeaderName::from_static("x-session-id"),
+    ]
+}
 
 #[tokio::main]
 async fn main() {
@@ -181,10 +189,7 @@ async fn main() {
         CorsLayer::new()
             .allow_origin(tower_http::cors::Any)
             .allow_methods([Method::GET, Method::POST, Method::DELETE])
-            .allow_headers([
-                axum::http::header::CONTENT_TYPE,
-                axum::http::header::AUTHORIZATION,
-            ])
+            .allow_headers(allowed_cors_headers())
     } else {
         let origins: Vec<HeaderValue> = allowed_origins
             .split(',')
@@ -194,10 +199,7 @@ async fn main() {
         CorsLayer::new()
             .allow_origin(origins)
             .allow_methods([Method::GET, Method::POST, Method::DELETE])
-            .allow_headers([
-                axum::http::header::CONTENT_TYPE,
-                axum::http::header::AUTHORIZATION,
-            ])
+            .allow_headers(allowed_cors_headers())
     };
 
     // build our application with a single route
@@ -277,4 +279,16 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     info!("Server running on {}", addr);
     axum::serve(listener, app).await.unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::allowed_cors_headers;
+
+    #[test]
+    fn allowed_cors_headers_include_session_id() {
+        assert!(allowed_cors_headers()
+            .iter()
+            .any(|header| header.as_str() == "x-session-id"));
+    }
 }
