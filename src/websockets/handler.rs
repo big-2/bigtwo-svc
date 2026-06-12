@@ -285,7 +285,7 @@ async fn handle_websocket_connection(
         }
     };
 
-    app_state
+    let connection_token = app_state
         .connection_manager
         .add_connection(player_uuid.clone(), outbound_sender.clone())
         .await;
@@ -443,33 +443,35 @@ async fn handle_websocket_connection(
     }
 
     // Cleanup: remove from connection manager and emit disconnect event
-    app_state
+    let removed_current_connection = app_state
         .connection_manager
-        .remove_connection(&player_uuid)
+        .remove_connection_if_current(&player_uuid, connection_token)
         .await;
 
-    // Emit disconnect event - let the event system handle the rest
-    app_state
-        .event_bus
-        .emit_to_room(
-            &room_id,
-            crate::event::RoomEvent::PlayerDisconnected {
-                player: player_uuid.clone(),
-            },
-        )
-        .await;
+    if removed_current_connection {
+        if let Err(e) = app_state
+            .room_service
+            .mark_player_disconnected(&room_id, &player_uuid)
+            .await
+        {
+            warn!(
+                room_id = %room_id,
+                player_uuid = %player_uuid,
+                error = %e,
+                "Failed to mark player as disconnected"
+            );
+        }
 
-    if let Err(e) = app_state
-        .room_service
-        .mark_player_disconnected(&room_id, &player_uuid)
-        .await
-    {
-        warn!(
-            room_id = %room_id,
-            player_uuid = %player_uuid,
-            error = %e,
-            "Failed to mark player as disconnected"
-        );
+        // Emit disconnect event after room state changes so broadcasts see fresh connected_players.
+        app_state
+            .event_bus
+            .emit_to_room(
+                &room_id,
+                crate::event::RoomEvent::PlayerDisconnected {
+                    player: player_uuid.clone(),
+                },
+            )
+            .await;
     }
 
     debug!(

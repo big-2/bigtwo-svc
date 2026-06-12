@@ -411,6 +411,12 @@ pub mod test_utils {
         async fn get_room(&self, _room_id: &str) -> Result<Option<RoomModel>, AppError> {
             Ok(None)
         }
+        async fn find_room_for_player(
+            &self,
+            _player_uuid: &str,
+        ) -> Result<Option<RoomModel>, AppError> {
+            Ok(None)
+        }
         async fn list_rooms(&self) -> Result<Vec<RoomModel>, AppError> {
             Ok(Vec::new())
         }
@@ -501,10 +507,19 @@ pub mod test_utils {
             &self,
             _username: String,
             _sender: tokio::sync::mpsc::Sender<String>,
-        ) {
+        ) -> crate::websockets::ConnectionToken {
+            crate::websockets::ConnectionToken(0)
         }
 
         async fn remove_connection(&self, _username: &str) {}
+
+        async fn remove_connection_if_current(
+            &self,
+            _username: &str,
+            _token: crate::websockets::ConnectionToken,
+        ) -> bool {
+            true
+        }
 
         async fn send_to_player(&self, _username: &str, _message: &str) {}
 

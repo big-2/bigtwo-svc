@@ -1,5 +1,7 @@
 // Public API
-pub use connection_manager::{ConnectionManager, InMemoryConnectionManager};
+#[allow(unused_imports)]
+// Used by integration tests and external callers implementing ConnectionManager.
+pub use connection_manager::{ConnectionManager, ConnectionToken, InMemoryConnectionManager};
 pub use handler::websocket_handler;
 #[allow(unused_imports)] // Used by integration tests
 pub use handler::WebsocketReceiveHandler;

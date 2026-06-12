@@ -324,9 +324,23 @@ mod tests {
 
     #[async_trait]
     impl ConnectionManager for TestConnectionManager {
-        async fn add_connection(&self, _uuid: String, _sender: mpsc::Sender<String>) {}
+        async fn add_connection(
+            &self,
+            _uuid: String,
+            _sender: mpsc::Sender<String>,
+        ) -> crate::websockets::ConnectionToken {
+            crate::websockets::ConnectionToken(0)
+        }
 
         async fn remove_connection(&self, _uuid: &str) {}
+
+        async fn remove_connection_if_current(
+            &self,
+            _uuid: &str,
+            _token: crate::websockets::ConnectionToken,
+        ) -> bool {
+            true
+        }
 
         async fn send_to_player(&self, uuid: &str, message: &str) {
             self.messages

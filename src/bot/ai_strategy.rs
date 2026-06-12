@@ -26,6 +26,8 @@ struct PredictRequest {
     played_cards_by_player: Vec<Vec<String>>,
     legal_actions: Vec<Vec<String>>,
     allow_pass: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    strategy: Option<&'static str>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -44,10 +46,15 @@ pub struct AiBotStrategy {
     client: Client,
     endpoint: Option<String>,
     fallback_strategy: BasicBotStrategy,
+    strategy: Option<&'static str>,
 }
 
 impl AiBotStrategy {
     pub fn new() -> Self {
+        Self::with_strategy(None)
+    }
+
+    pub fn with_strategy(strategy: Option<&'static str>) -> Self {
         let endpoint = build_predict_url_from_env();
         let timeout_ms = read_timeout_ms_from_env();
         let client = Client::builder()
@@ -65,6 +72,7 @@ impl AiBotStrategy {
             client,
             endpoint,
             fallback_strategy: BasicBotStrategy::new(),
+            strategy,
         }
     }
 
@@ -121,6 +129,7 @@ impl AiBotStrategy {
             played_cards_by_player,
             legal_actions,
             allow_pass,
+            strategy: self.strategy,
         })
     }
 
@@ -479,6 +488,35 @@ mod tests {
         assert_eq!(
             request.played_cards_by_player[3],
             vec!["9D".to_string(), "TD".to_string()]
+        );
+    }
+
+    #[test]
+    fn build_request_omits_strategy_by_default() {
+        let game = create_game_with_partial_progress();
+        let strategy = AiBotStrategy::new();
+
+        let request = strategy
+            .build_request(&game, "bot-1", vec![vec!["4D".to_string()]], false)
+            .expect("request should be built");
+        let serialized = serde_json::to_value(&request).unwrap();
+
+        assert!(serialized.get("strategy").is_none());
+    }
+
+    #[test]
+    fn build_request_includes_pimc_strategy_when_configured() {
+        let game = create_game_with_partial_progress();
+        let strategy = AiBotStrategy::with_strategy(Some("pimc"));
+
+        let request = strategy
+            .build_request(&game, "bot-1", vec![vec!["4D".to_string()]], false)
+            .expect("request should be built");
+        let serialized = serde_json::to_value(&request).unwrap();
+
+        assert_eq!(
+            serialized.get("strategy").and_then(|value| value.as_str()),
+            Some("pimc")
         );
     }
 

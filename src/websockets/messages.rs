@@ -92,6 +92,8 @@ pub struct MovePlayedPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorPayload {
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,7 +183,18 @@ impl WebSocketMessage {
     /// Create an ERROR message
     #[allow(dead_code)] // Message constructor for error responses
     pub fn error(message: String) -> Self {
-        let payload = ErrorPayload { message };
+        let payload = ErrorPayload {
+            message,
+            error_type: None,
+        };
+        Self::new(MessageType::Error, serde_json::to_value(payload).unwrap())
+    }
+
+    pub fn connected_elsewhere() -> Self {
+        let payload = ErrorPayload {
+            message: "Room open in another tab".to_string(),
+            error_type: Some("connected_elsewhere".to_string()),
+        };
         Self::new(MessageType::Error, serde_json::to_value(payload).unwrap())
     }
 

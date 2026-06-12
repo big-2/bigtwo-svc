@@ -16,6 +16,7 @@ impl BotStrategyFactory {
         static MEDIUM_STRATEGY: OnceLock<Arc<dyn BotStrategy>> = OnceLock::new();
         static HARD_STRATEGY: OnceLock<Arc<dyn BotStrategy>> = OnceLock::new();
         static AI_STRATEGY: OnceLock<Arc<dyn BotStrategy>> = OnceLock::new();
+        static EXPERT_STRATEGY: OnceLock<Arc<dyn BotStrategy>> = OnceLock::new();
 
         match difficulty {
             BotDifficulty::Easy => EASY_STRATEGY
@@ -29,6 +30,9 @@ impl BotStrategyFactory {
                 .clone(),
             BotDifficulty::Ai => AI_STRATEGY
                 .get_or_init(|| Arc::new(AiBotStrategy::new()))
+                .clone(),
+            BotDifficulty::Expert => EXPERT_STRATEGY
+                .get_or_init(|| Arc::new(AiBotStrategy::with_strategy(Some("pimc"))))
                 .clone(),
         }
     }
@@ -61,6 +65,12 @@ mod tests {
     #[test]
     fn test_create_ai_strategy() {
         let strategy = BotStrategyFactory::create_strategy(BotDifficulty::Ai);
+        assert_eq!(strategy.strategy_name(), "AiBotStrategy");
+    }
+
+    #[test]
+    fn test_create_expert_strategy() {
+        let strategy = BotStrategyFactory::create_strategy(BotDifficulty::Expert);
         assert_eq!(strategy.strategy_name(), "AiBotStrategy");
     }
 }

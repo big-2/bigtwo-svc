@@ -5,7 +5,13 @@ use axum::{
 use std::sync::Arc;
 use tracing::{debug, info, instrument};
 
-use super::types::{CreateRoomApiRequest, JoinRoomRequest, RoomCreateRequest, RoomResponse};
+use super::{
+    repository::LeaveRoomResult,
+    types::{
+        CreateRoomApiRequest, CurrentRoomResponse, JoinRoomRequest, LeaveRoomResponse,
+        RoomCreateRequest, RoomResponse,
+    },
+};
 use crate::{
     bot::BotRoomSubscriber,
     event::{RoomEvent, RoomSubscription},
@@ -15,6 +21,25 @@ use crate::{
     stats::service::StatsRoomSubscriber,
     websockets::WebSocketRoomSubscriber,
 };
+
+async fn room_response_from_model(
+    state: &AppState,
+    room_model: &super::models::RoomModel,
+) -> RoomResponse {
+    let host_uuid = room_model.host_uuid.clone().unwrap_or_default();
+    let host_name = state
+        .player_mapping
+        .get_playername(&host_uuid)
+        .await
+        .unwrap_or(host_uuid);
+
+    RoomResponse {
+        id: room_model.id.clone(),
+        host_name,
+        status: room_model.status.clone(),
+        player_count: room_model.get_player_count(),
+    }
+}
 
 /// HTTP handler for creating a new room
 ///
@@ -117,19 +142,7 @@ pub async fn create_room(
     // Start background task - we don't need to track the JoinHandle
     drop(activity_subscription.start().await);
 
-    // Map host UUID to display name for response
-    let host_uuid = room_model.host_uuid.clone().unwrap_or_default();
-    let host_name = state
-        .player_mapping
-        .get_playername(&host_uuid)
-        .await
-        .unwrap_or(host_uuid);
-    let room = RoomResponse {
-        id: room_model.id.clone(),
-        host_name,
-        status: room_model.status.clone(),
-        player_count: room_model.get_player_count(),
-    };
+    let room = room_response_from_model(&state, &room_model).await;
 
     info!(
         room_id = %room.id,
@@ -138,6 +151,43 @@ pub async fn create_room(
     );
 
     Ok(Json(room))
+}
+
+/// HTTP handler for getting the authenticated player's current room membership.
+///
+/// GET /room/current
+/// Requires valid session (X-Session-ID header)
+#[instrument(name = "get_current_room", skip(state))]
+pub async fn get_current_room(
+    State(state): State<AppState>,
+    Extension(claims): Extension<SessionClaims>,
+) -> Result<Json<Option<CurrentRoomResponse>>, AppError> {
+    let player_uuid = state
+        .session_service
+        .get_player_uuid_by_session(&claims.session_id)
+        .await?
+        .ok_or_else(|| AppError::Unauthorized("No player UUID for session".to_string()))?;
+
+    let Some(room_model) = state
+        .room_service
+        .get_current_room_for_player(&player_uuid)
+        .await?
+    else {
+        return Ok(Json(None));
+    };
+
+    let is_connected = room_model
+        .get_connected_players()
+        .iter()
+        .any(|uuid| uuid == &player_uuid);
+    let has_active_game = state.game_service.get_game(&room_model.id).await.is_some();
+    let room = room_response_from_model(&state, &room_model).await;
+
+    Ok(Json(Some(CurrentRoomResponse {
+        room,
+        is_connected,
+        has_active_game,
+    })))
 }
 
 /// HTTP handler for listing all rooms
@@ -155,19 +205,7 @@ pub async fn list_rooms(
     let models = service.list_rooms().await?;
     let mut rooms = Vec::with_capacity(models.len());
     for m in models {
-        let host_uuid = m.host_uuid.clone().unwrap_or_default();
-        let host_name = state
-            .player_mapping
-            .get_playername(&host_uuid)
-            .await
-            .unwrap_or(host_uuid);
-        let player_count = m.get_player_count();
-        rooms.push(RoomResponse {
-            id: m.id,
-            host_name,
-            status: m.status,
-            player_count,
-        });
+        rooms.push(room_response_from_model(&state, &m).await);
     }
 
     info!(room_count = rooms.len(), "Rooms listed successfully");
@@ -223,18 +261,7 @@ pub async fn join_room(
     let room_model = service
         .join_room(room_id.clone(), player_uuid.clone())
         .await?;
-    let host_uuid = room_model.host_uuid.clone().unwrap_or_default();
-    let host_name = state
-        .player_mapping
-        .get_playername(&host_uuid)
-        .await
-        .unwrap_or(host_uuid);
-    let room = RoomResponse {
-        id: room_model.id.clone(),
-        host_name,
-        status: room_model.status.clone(),
-        player_count: room_model.get_player_count(),
-    };
+    let room = room_response_from_model(&state, &room_model).await;
 
     // Emit room-specific event directly to room subscribers
     state
@@ -258,6 +285,101 @@ pub async fn join_room(
     Ok(Json(room))
 }
 
+/// HTTP handler for explicitly leaving a room without requiring an active WebSocket.
+///
+/// POST /room/{room_id}/leave
+/// Requires valid session (X-Session-ID header)
+#[instrument(name = "leave_room", skip(state))]
+pub async fn leave_room(
+    State(state): State<AppState>,
+    Path(room_id): Path<String>,
+    Extension(claims): Extension<SessionClaims>,
+) -> Result<Json<LeaveRoomResponse>, AppError> {
+    let player_uuid = state
+        .session_service
+        .get_player_uuid_by_session(&claims.session_id)
+        .await?
+        .ok_or_else(|| AppError::Unauthorized("No player UUID for session".to_string()))?;
+
+    let room_before = state.room_service.get_room(&room_id).await?;
+    let was_host = room_before
+        .as_ref()
+        .map(|room| room.host_uuid == Some(player_uuid.clone()))
+        .unwrap_or(false);
+
+    match state
+        .room_service
+        .leave_room(room_id.clone(), player_uuid.clone())
+        .await?
+    {
+        LeaveRoomResult::Success(updated_room) => {
+            state
+                .event_bus
+                .emit_to_room(
+                    &room_id,
+                    RoomEvent::PlayerLeft {
+                        player: player_uuid.clone(),
+                    },
+                )
+                .await;
+
+            if was_host && updated_room.host_uuid != Some(player_uuid.clone()) {
+                if let Some(new_host) = updated_room.host_uuid {
+                    state
+                        .event_bus
+                        .emit_to_room(
+                            &room_id,
+                            RoomEvent::HostChanged {
+                                old_host: player_uuid,
+                                new_host,
+                            },
+                        )
+                        .await;
+                }
+            }
+
+            Ok(Json(LeaveRoomResponse {
+                status: "left".to_string(),
+            }))
+        }
+        LeaveRoomResult::RoomDeleted => {
+            let bots_in_room = state.bot_manager.get_bots_in_room(&room_id).await;
+
+            state.game_service.remove_game(&room_id).await;
+
+            if let Err(err) = state.stats_service.reset_room_stats(&room_id).await {
+                debug!(
+                    room_id = %room_id,
+                    error = %err,
+                    "Failed to reset room stats during room cleanup"
+                );
+            }
+
+            if let Err(err) = state.bot_manager.remove_all_bots_in_room(&room_id).await {
+                debug!(
+                    room_id = %room_id,
+                    error = %err,
+                    "Failed to clean up bots after room delete"
+                );
+            }
+
+            for bot in bots_in_room {
+                let _ = state.player_mapping.remove_player(&bot.uuid).await;
+            }
+
+            state.event_bus.remove_room(&room_id).await;
+
+            Ok(Json(LeaveRoomResponse {
+                status: "room_deleted".to_string(),
+            }))
+        }
+        LeaveRoomResult::PlayerNotInRoom => {
+            Err(AppError::BadRequest("Player is not in room".to_string()))
+        }
+        LeaveRoomResult::RoomNotFound => Err(AppError::NotFound("Room not found".to_string())),
+    }
+}
+
 pub async fn get_room_details(
     State(state): State<AppState>,
     Path(room_id): Path<String>,
@@ -265,18 +387,7 @@ pub async fn get_room_details(
     // Get room without requiring auth - just returns room info
     let service = Arc::clone(&state.room_service);
     let room_model = service.get_room_details(room_id.clone()).await?;
-    let host_uuid = room_model.host_uuid.clone().unwrap_or_default();
-    let host_name = state
-        .player_mapping
-        .get_playername(&host_uuid)
-        .await
-        .unwrap_or(host_uuid);
-    let room = RoomResponse {
-        id: room_model.id.clone(),
-        host_name,
-        status: room_model.status.clone(),
-        player_count: room_model.get_player_count(),
-    };
+    let room = room_response_from_model(&state, &room_model).await;
 
     Ok(Json(room))
 }

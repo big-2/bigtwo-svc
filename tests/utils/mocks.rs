@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
-use bigtwo::websockets::ConnectionManager;
+use bigtwo::websockets::{ConnectionManager, ConnectionToken};
 
 // ============================================================================
 // Mock Infrastructure
@@ -76,12 +76,18 @@ impl MockConnectionManager {
 
 #[async_trait]
 impl ConnectionManager for MockConnectionManager {
-    async fn add_connection(&self, uuid: String, _sender: mpsc::Sender<String>) {
+    async fn add_connection(&self, uuid: String, _sender: mpsc::Sender<String>) -> ConnectionToken {
         self.add_connected_player(&uuid).await;
+        ConnectionToken(0)
     }
 
     async fn remove_connection(&self, uuid: &str) {
         self.connected_players.write().await.retain(|p| p != uuid);
+    }
+
+    async fn remove_connection_if_current(&self, uuid: &str, _token: ConnectionToken) -> bool {
+        self.remove_connection(uuid).await;
+        true
     }
 
     async fn send_to_player(&self, uuid: &str, message: &str) {

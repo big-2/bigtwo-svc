@@ -251,6 +251,20 @@ async fn main() {
                 session::jwt_auth,
             )),
         )
+        .route(
+            "/room/:room_id/leave",
+            post(room::leave_room).layer(middleware::from_fn_with_state(
+                app_state.clone(),
+                session::jwt_auth,
+            )),
+        )
+        .route(
+            "/room/current",
+            get(room::get_current_room).layer(middleware::from_fn_with_state(
+                app_state.clone(),
+                session::jwt_auth,
+            )),
+        )
         .route("/room/:room_id", get(room::get_room_details))
         .route("/room/:room_id/stats", get(room::get_room_stats))
         .route(

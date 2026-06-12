@@ -52,6 +52,16 @@ impl RoomService {
         self.repository.get_room(room_id).await
     }
 
+    /// Gets the current room for a player, if they are already seated.
+    #[instrument(skip(self))]
+    pub async fn get_current_room_for_player(
+        &self,
+        player_uuid: &str,
+    ) -> Result<Option<RoomModel>, AppError> {
+        debug!(player_uuid = %player_uuid, "Getting current room for player");
+        self.repository.find_room_for_player(player_uuid).await
+    }
+
     /// Lists all available rooms
     #[instrument(skip(self))]
     pub async fn list_rooms(&self) -> Result<Vec<RoomModel>, AppError> {

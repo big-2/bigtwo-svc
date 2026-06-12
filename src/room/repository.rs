@@ -35,6 +35,7 @@ pub enum LeaveRoomResult {
 pub trait RoomRepository {
     async fn create_room(&self, room: &RoomModel) -> Result<(), AppError>;
     async fn get_room(&self, room_id: &str) -> Result<Option<RoomModel>, AppError>;
+    async fn find_room_for_player(&self, player_uuid: &str) -> Result<Option<RoomModel>, AppError>;
     async fn list_rooms(&self) -> Result<Vec<RoomModel>, AppError>;
 
     /// Atomically attempts to join a room by checking capacity and incrementing player count
@@ -132,6 +133,18 @@ impl RoomRepository for InMemoryRoomRepository {
         let rooms = self.rooms.lock().unwrap();
 
         Ok(rooms.get(room_id).cloned())
+    }
+
+    #[instrument(skip(self))]
+    async fn find_room_for_player(&self, player_uuid: &str) -> Result<Option<RoomModel>, AppError> {
+        debug!(player_uuid = %player_uuid, "Finding room for player");
+
+        let rooms = self.rooms.lock().unwrap();
+
+        Ok(rooms
+            .values()
+            .find(|room| room.has_player(player_uuid))
+            .cloned())
     }
 
     #[instrument(skip(self))]

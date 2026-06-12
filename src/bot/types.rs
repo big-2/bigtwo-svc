@@ -20,6 +20,21 @@ pub enum BotDifficulty {
     Medium,
     Hard,
     Ai,
+    Expert,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bot_difficulty_serializes_expert_lowercase() {
+        let encoded = serde_json::to_string(&BotDifficulty::Expert).unwrap();
+        assert_eq!(encoded, "\"expert\"");
+
+        let decoded: BotDifficulty = serde_json::from_str("\"expert\"").unwrap();
+        assert_eq!(decoded, BotDifficulty::Expert);
+    }
 }
 
 impl BotPlayer {

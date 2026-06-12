@@ -14,6 +14,7 @@ This is the Rust backend for Big Two, a real-time multiplayer card game. Built w
 # Development (auto-detects PostgreSQL or falls back to in-memory)
 ./scripts/dev.sh --postgres    # Force PostgreSQL
 ./scripts/dev.sh --memory      # Force in-memory storage
+./scripts/dev.sh --postgres --skip-build  # Reuse running build when iterating
 
 # Build and test
 cargo check                    # Fast compile check
@@ -28,6 +29,7 @@ cargo fmt -- --check           # Check formatting without modifying
 # Database (when using PostgreSQL)
 sqlx migrate run              # Apply migrations
 sqlx migrate add <name>       # Create migration
+docker compose -f docker-compose.dev.yml up -d postgres  # Start local DB manually
 
 # Session endpoint testing
 ./scripts/test-session.sh     # Test REST endpoints
@@ -55,6 +57,8 @@ Configuration behavior:
 
 - Use PostgreSQL if `DATABASE_URL` is set
 - Otherwise fall back to in-memory storage
+- External AI inference is optional. If `AI_BOT_SERVICE_URL` is unset, AI difficulty bots log a warning and fall back to `BasicBotStrategy`.
+- When configuring external AI inference, `AI_BOT_SERVICE_PREDICT_PATH` defaults to `/api/v1/predict` and `AI_BOT_HTTP_TIMEOUT_MS` defaults to `1200`.
 
 ## Directory Structure
 
@@ -169,8 +173,10 @@ API endpoints are considered stable. Do not modify routes or message formats unl
 - `GET /room/{id}` - Get room details
 - `GET /room/{id}/stats` - Get current stats for room (games played, player stats)
 - `POST /room/{id}/join` - Join room (authenticated)
+- `POST /room/{id}/leave` - Leave current room (authenticated)
+- `GET /room/current` - Get current room for authenticated session
 - `DELETE /room/{id}` - Delete room (host only)
-- `POST /room/{id}/bot/add` - Add AI bot to room
+- `POST /room/{id}/bot` - Add AI bot to room
 - `DELETE /room/{id}/bot/{bot_uuid}` - Remove bot from room
 
 ### WebSocket
@@ -371,10 +377,11 @@ The goal of these instructions is to:
 ## Bot System
 
 The backend includes AI bots for testing and single-player gameplay:
-- **Bot creation**: Add bots via REST endpoint `POST /room/{id}/bot/add`
-- **Bot strategies**: Multiple difficulty levels (Easy, Medium, Hard) supported via BotStrategyFactory
+- **Bot creation**: Add bots via REST endpoint `POST /room/{id}/bot`
+- **Bot strategies**: Multiple difficulty levels (Easy, Medium, Hard, Ai) are supported via BotStrategyFactory
   - Currently all levels use BasicBotStrategy
   - Medium and Hard strategies are not implemented yet
+  - Ai uses `AiBotStrategy`, which falls back to `BasicBotStrategy` if remote inference is unavailable
 - **Strategy pattern**: BotStrategy trait allows easy addition of new bot behaviors
 - **Event-driven**: Bots respond to `TurnChange` events with automatic moves
 - **Integration**: Bots appear as regular players to other clients

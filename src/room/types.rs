@@ -29,3 +29,17 @@ pub struct RoomResponse {
     pub status: String,
     pub player_count: i32,
 }
+
+/// Authenticated response for the current user's room membership.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CurrentRoomResponse {
+    pub room: RoomResponse,
+    pub is_connected: bool,
+    pub has_active_game: bool,
+}
+
+/// Response for explicit room leave requests.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LeaveRoomResponse {
+    pub status: String,
+}
