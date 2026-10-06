@@ -23,20 +23,6 @@ pub enum BotDifficulty {
     Expert,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bot_difficulty_serializes_expert_lowercase() {
-        let encoded = serde_json::to_string(&BotDifficulty::Expert).unwrap();
-        assert_eq!(encoded, "\"expert\"");
-
-        let decoded: BotDifficulty = serde_json::from_str("\"expert\"").unwrap();
-        assert_eq!(decoded, BotDifficulty::Expert);
-    }
-}
-
 impl BotPlayer {
     /// Create a new bot with a unique UUID
     pub fn new(room_id: String, name: String, difficulty: BotDifficulty) -> Self {
@@ -65,4 +51,18 @@ pub trait BotStrategy: Send + Sync {
     /// Get the name of this strategy
     #[allow(dead_code)] // Trait method for strategy identification
     fn strategy_name(&self) -> &'static str;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bot_difficulty_serializes_expert_lowercase() {
+        let encoded = serde_json::to_string(&BotDifficulty::Expert).unwrap();
+        assert_eq!(encoded, "\"expert\"");
+
+        let decoded: BotDifficulty = serde_json::from_str("\"expert\"").unwrap();
+        assert_eq!(decoded, BotDifficulty::Expert);
+    }
 }
