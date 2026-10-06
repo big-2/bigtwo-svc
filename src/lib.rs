@@ -3,6 +3,7 @@
 
 pub mod bot;
 pub mod event;
+pub mod feedback;
 pub mod game;
 pub mod player;
 pub mod room;
@@ -18,6 +19,10 @@ pub mod websockets;
 #[allow(unused_imports)]
 pub use bot::{BotManager, BotRoomSubscriber};
 pub use event::{EventBus, RoomEvent, RoomSubscription};
+#[allow(unused_imports)]
+pub use feedback::{
+    FeedbackRepository, FeedbackService, InMemoryFeedbackRepository, SubmitFeedbackRequest,
+};
 pub use game::GameService;
 pub use room::{models::RoomModel, repository::RoomRepository};
 pub use shared::AppError;

@@ -1,5 +1,6 @@
 mod bot;
 mod event;
+mod feedback;
 mod game;
 mod player;
 mod room;
@@ -28,6 +29,9 @@ use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::bot::BotManager;
+use crate::feedback::{
+    FeedbackRepository, FeedbackService, InMemoryFeedbackRepository, PostgresFeedbackRepository,
+};
 use crate::stats::{
     service::StatsService, InMemoryGameHistoryRepository, InMemoryStatsRepository,
     PostgresGameHistoryRepository,
@@ -134,6 +138,16 @@ async fn main() {
             .with_game_history_repository(Arc::new(InMemoryGameHistoryRepository::new()));
     }
     let stats_service = Arc::new(stats_service_builder.build());
+
+    // Post-game feedback: one submission per player, stored alongside game history.
+    let feedback_repository: Arc<dyn FeedbackRepository> = if let Some(pool) = &postgres_pool {
+        info!("💬 Post-game feedback enabled (PostgreSQL)");
+        Arc::new(PostgresFeedbackRepository::new(pool.clone()))
+    } else {
+        info!("💬 Post-game feedback enabled (in-memory, lost on restart)");
+        Arc::new(InMemoryFeedbackRepository::new())
+    };
+    let feedback_service = Arc::new(FeedbackService::new(feedback_repository.clone()));
     // Create RoomService focused purely on business logic
     let room_service = Arc::new(RoomService::new(room_repository.clone()));
 
@@ -175,6 +189,8 @@ async fn main() {
         .with_bot_manager(bot_manager)
         .with_stats_repository(stats_repository)
         .with_stats_service(stats_service)
+        .with_feedback_repository(feedback_repository)
+        .with_feedback_service(feedback_service)
         .build()
         .expect("Failed to build AppState - all required dependencies should be provided");
 
@@ -281,6 +297,7 @@ async fn main() {
             ),
         )
         .route("/ws/:room_id", get(websockets::websocket_handler))
+        .merge(feedback::routes(app_state.clone()))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(app_state);

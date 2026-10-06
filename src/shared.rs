@@ -9,6 +9,7 @@ use thiserror::Error;
 
 use crate::bot::BotManager;
 use crate::event::RoomEventHandler;
+use crate::feedback::{FeedbackRepository, FeedbackService, InMemoryFeedbackRepository};
 use crate::room::repository::RoomRepository;
 use crate::room::service::RoomService;
 use crate::session::repository::SessionRepository;
@@ -30,6 +31,7 @@ pub struct AppState {
     pub player_mapping: Arc<dyn PlayerMappingService>,
     pub bot_manager: Arc<BotManager>,
     pub stats_service: Arc<StatsService>,
+    pub feedback_service: Arc<FeedbackService>,
     pub activity_subscriber: Arc<dyn RoomEventHandler>,
 }
 
@@ -46,6 +48,7 @@ impl AppState {
         player_mapping: Arc<dyn PlayerMappingService>,
         bot_manager: Arc<BotManager>,
         stats_service: Arc<StatsService>,
+        feedback_service: Arc<FeedbackService>,
         activity_subscriber: Arc<dyn RoomEventHandler>,
     ) -> Self {
         Self {
@@ -57,6 +60,7 @@ impl AppState {
             player_mapping,
             bot_manager,
             stats_service,
+            feedback_service,
             activity_subscriber,
         }
     }
@@ -79,6 +83,8 @@ pub struct AppStateBuilder {
     bot_manager: Option<Arc<BotManager>>,
     stats_repository: Option<Arc<dyn StatsRepository>>,
     stats_service: Option<Arc<StatsService>>,
+    feedback_repository: Option<Arc<dyn FeedbackRepository>>,
+    feedback_service: Option<Arc<FeedbackService>>,
     activity_subscriber: Option<Arc<dyn RoomEventHandler>>,
 }
 
@@ -102,6 +108,8 @@ impl AppStateBuilder {
             bot_manager: None,
             stats_repository: None,
             stats_service: None,
+            feedback_repository: None,
+            feedback_service: None,
             activity_subscriber: None,
         }
     }
@@ -167,6 +175,17 @@ impl AppStateBuilder {
         self
     }
 
+    pub fn with_feedback_repository(mut self, repository: Arc<dyn FeedbackRepository>) -> Self {
+        self.feedback_repository = Some(repository);
+        self
+    }
+
+    #[allow(dead_code)] // Builder method for test and future configuration
+    pub fn with_feedback_service(mut self, feedback_service: Arc<FeedbackService>) -> Self {
+        self.feedback_service = Some(feedback_service);
+        self
+    }
+
     pub fn with_activity_subscriber(mut self, subscriber: Arc<dyn RoomEventHandler>) -> Self {
         self.activity_subscriber = Some(subscriber);
         self
@@ -214,6 +233,13 @@ impl AppStateBuilder {
             )
         });
 
+        let feedback_service = self.feedback_service.clone().unwrap_or_else(|| {
+            let repository = self.feedback_repository.clone().unwrap_or_else(|| {
+                Arc::new(InMemoryFeedbackRepository::new()) as Arc<dyn FeedbackRepository>
+            });
+            Arc::new(FeedbackService::new(repository))
+        });
+
         let activity_subscriber =
             self.activity_subscriber
                 .ok_or(AppStateBuilderError::MissingDependency(
@@ -229,6 +255,7 @@ impl AppStateBuilder {
             player_mapping,
             bot_manager,
             stats_service,
+            feedback_service,
             activity_subscriber,
         })
     }
@@ -286,6 +313,13 @@ impl AppStateBuilder {
             )
         });
 
+        let feedback_service = self.feedback_service.clone().unwrap_or_else(|| {
+            let repository = self.feedback_repository.clone().unwrap_or_else(|| {
+                Arc::new(InMemoryFeedbackRepository::new()) as Arc<dyn FeedbackRepository>
+            });
+            Arc::new(FeedbackService::new(repository))
+        });
+
         let activity_tracker = Arc::new(crate::room::activity_tracker::ActivityTracker::new(
             Arc::new(crate::room::repository::InMemoryRoomRepository::new()),
         ));
@@ -306,6 +340,7 @@ impl AppStateBuilder {
             player_mapping,
             bot_manager,
             stats_service,
+            feedback_service,
             activity_subscriber,
         }
     }
@@ -337,6 +372,9 @@ pub enum AppError {
     #[error("Forbidden: {0}")]
     Forbidden(String),
 
+    #[error("Conflict: {0}")]
+    Conflict(String),
+
     #[error("Internal server error")]
     Internal,
 }
@@ -353,6 +391,7 @@ impl IntoResponse for AppError {
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
             AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
+            AppError::Conflict(msg) => (StatusCode::CONFLICT, msg),
             AppError::Internal => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Internal server error".to_string(),
@@ -572,6 +611,13 @@ pub mod test_utils {
                 )
             });
 
+            let feedback_service = self.feedback_service.clone().unwrap_or_else(|| {
+                let repository = self.feedback_repository.clone().unwrap_or_else(|| {
+                    Arc::new(InMemoryFeedbackRepository::new()) as Arc<dyn FeedbackRepository>
+                });
+                Arc::new(FeedbackService::new(repository))
+            });
+
             let activity_tracker = Arc::new(crate::room::activity_tracker::ActivityTracker::new(
                 Arc::new(DummyRoomRepository),
             ));
@@ -594,6 +640,7 @@ pub mod test_utils {
                 player_mapping,
                 bot_manager,
                 stats_service,
+                feedback_service,
                 activity_subscriber,
             }
         }
