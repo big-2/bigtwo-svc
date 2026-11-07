@@ -176,7 +176,7 @@ async fn test_wrong_turn_player_cannot_move() {
     setup.send_move(&wrong_player, vec!["4H"]).await;
 
     MessageAssertion::for_all_players(&setup)
-        .received_no_messages()
+        .only_player_told_move_rejected(&wrong_player, "It's not your turn.")
         .await;
 }
 
@@ -198,7 +198,10 @@ async fn test_cannot_beat_single_card_with_pair() {
     setup.send_move(&second_player, vec!["4H", "4S"]).await;
 
     MessageAssertion::for_all_players(&setup)
-        .received_no_messages()
+        .only_player_told_move_rejected(
+            &second_player,
+            "That play doesn't beat the cards on the table.",
+        )
         .await;
 }
 
@@ -296,9 +299,9 @@ async fn test_first_turn_must_include_three_of_diamonds() {
     // Try to play without 3 of diamonds on first turn - should fail
     setup.send_move(&first_player, vec!["4H"]).await;
 
-    // No messages should be sent since the move is invalid
+    // Only the player who made the invalid move should hear about it
     MessageAssertion::for_all_players(&setup)
-        .received_no_messages()
+        .only_player_told_move_rejected(&first_player, "The first play must include the 3♦.")
         .await;
 }
 

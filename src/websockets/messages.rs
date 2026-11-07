@@ -190,6 +190,15 @@ impl WebSocketMessage {
         Self::new(MessageType::Error, serde_json::to_value(payload).unwrap())
     }
 
+    /// Create an ERROR message telling a player why their move was rejected
+    pub fn move_rejected(message: String) -> Self {
+        let payload = ErrorPayload {
+            message,
+            error_type: Some("move_rejected".to_string()),
+        };
+        Self::new(MessageType::Error, serde_json::to_value(payload).unwrap())
+    }
+
     pub fn connected_elsewhere() -> Self {
         let payload = ErrorPayload {
             message: "Room open in another tab".to_string(),

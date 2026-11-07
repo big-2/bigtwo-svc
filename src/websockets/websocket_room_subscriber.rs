@@ -93,6 +93,11 @@ impl RoomEventHandler for WebSocketRoomSubscriber {
                     .handle_move_played(room_id, &player, &cards, game)
                     .await
             }
+            RoomEvent::MoveRejected { player, message } => {
+                self.game_handlers
+                    .handle_move_rejected(&player, &message)
+                    .await
+            }
             RoomEvent::TurnChanged { player } => {
                 self.game_handlers
                     .handle_turn_changed(room_id, &player)

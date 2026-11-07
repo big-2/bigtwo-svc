@@ -1,12 +1,7 @@
 //! Game scenario builders - pre-configured game states for testing
 #![allow(dead_code)] // Test utilities may not all be used in every test
 
-use std::sync::Arc;
-
-use bigtwo::{
-    event::RoomSubscription,
-    game::{Card, GameEventRoomSubscriber, Rank, Suit},
-};
+use bigtwo::game::{Card, Rank, Suit};
 
 use super::setup::TestSetup;
 
@@ -161,18 +156,6 @@ impl GameBuilder {
             // Custom cards specified - create game with predetermined cards
             self.create_custom_game(setup).await
         };
-
-        // Setup game event subscriber
-        let game_event_subscriber = Arc::new(GameEventRoomSubscriber::new(
-            setup.game_service.clone(),
-            setup.event_bus.clone(),
-        ));
-        let game_subscription = RoomSubscription::new(
-            "room-123".to_string(),
-            game_event_subscriber,
-            setup.event_bus.clone(),
-        );
-        let _handle = game_subscription.start().await;
 
         first_player_name
     }

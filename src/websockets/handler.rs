@@ -498,11 +498,16 @@ fn build_reconnect_hydration_messages(
         .iter()
         .map(|p| (p.uuid.clone(), p.cards.len()))
         .collect();
-    let last_plays_by_player: std::collections::HashMap<String, Vec<String>> = game
-        .last_plays_by_player()
-        .iter()
-        .map(|(uuid, cards)| (uuid.clone(), cards.iter().map(|c| c.to_string()).collect()))
-        .collect();
+    // After three straight passes the table is clear, so there is no last play to restore.
+    let table_clear = game.consecutive_passes() >= 3;
+    let last_plays_by_player: std::collections::HashMap<String, Vec<String>> = if table_clear {
+        std::collections::HashMap::new()
+    } else {
+        game.last_plays_by_player()
+            .iter()
+            .map(|(uuid, cards)| (uuid.clone(), cards.iter().map(|c| c.to_string()).collect()))
+            .collect()
+    };
 
     let mut messages = vec![WebSocketMessage::game_started(
         game.current_player_turn().clone(),
@@ -517,7 +522,7 @@ fn build_reconnect_hydration_messages(
         .iter()
         .map(|c| c.to_string())
         .collect::<Vec<_>>();
-    if !last_cards.is_empty() {
+    if !table_clear && !last_cards.is_empty() {
         if let Some(last_player_uuid) = game.last_non_pass_player_uuid() {
             let remaining_cards = game
                 .players()
@@ -660,5 +665,48 @@ mod tests {
         let messages = build_reconnect_hydration_messages(&game, "alice");
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].message_type, MessageType::GameStarted);
+    }
+
+    fn game_after_passes(passes: usize) -> Game {
+        let opening = Card::new(Rank::Three, Suit::Diamonds);
+        let uuids = ["alice", "bob", "carol", "dave"];
+        let mut game = Game::new(
+            "room-1".to_string(),
+            uuids
+                .iter()
+                .map(|uuid| Player {
+                    name: uuid.to_string(),
+                    uuid: uuid.to_string(),
+                    cards: vec![opening, Card::new(Rank::Four, Suit::Clubs)],
+                })
+                .collect(),
+            0,
+            0,
+            vec![],
+            std::collections::HashMap::new(),
+        );
+        game.play_cards("alice", &[opening]).unwrap();
+        for uuid in &uuids[1..=passes] {
+            game.play_cards(uuid, &[]).unwrap();
+        }
+        game
+    }
+
+    #[test]
+    fn reconnect_hydration_restores_last_play_mid_round() {
+        let messages = build_reconnect_hydration_messages(&game_after_passes(2), "alice");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].message_type, MessageType::MovePlayed);
+    }
+
+    #[test]
+    fn reconnect_hydration_omits_last_play_after_table_clears() {
+        let messages = build_reconnect_hydration_messages(&game_after_passes(3), "alice");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].message_type, MessageType::GameStarted);
+        assert_eq!(
+            messages[0].payload["last_plays_by_player"],
+            serde_json::json!({})
+        );
     }
 }

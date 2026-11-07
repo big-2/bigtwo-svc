@@ -47,6 +47,23 @@ pub enum GameError {
     StorageError(String),
 }
 
+impl GameError {
+    /// Text shown to the player whose move was rejected.
+    pub fn player_message(&self) -> String {
+        match self {
+            GameError::InvalidPlayerTurn => "It's not your turn.",
+            GameError::GameAlreadyFinished => "This game has already ended.",
+            GameError::InvalidPlayedCards => "That play doesn't beat the cards on the table.",
+            GameError::CannotPass => "You lead this round, so you must play cards.",
+            GameError::CardNotOwned(_) => "You don't have one of those cards.",
+            GameError::HandError(_) => "Those cards don't form a valid hand.",
+            GameError::FirstTurnMustIncludeThreeOfDiamonds => "The first play must include the 3♦.",
+            GameError::StorageError(_) => "Your move could not be saved. Please try again.",
+        }
+        .to_string()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Game {
     id: String,

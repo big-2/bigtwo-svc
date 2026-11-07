@@ -33,6 +33,8 @@ pub enum RoomEvent {
         cards: Vec<Card>,
         game: Game,
     },
+    /// A player's move was rejected; only that player needs to be told why
+    MoveRejected { player: String, message: String },
     /// Turn changed to next player
     TurnChanged { player: String },
     /// Game won by a player

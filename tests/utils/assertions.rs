@@ -83,6 +83,27 @@ impl<'a> MessageAssertion<'a> {
         }
     }
 
+    /// Assert that only the rejected player was told why, and everyone else heard nothing
+    pub async fn only_player_told_move_rejected(self, rejected_player: &str, reason: &str) {
+        for player in &self.players {
+            let messages = self.setup.mock_conn_manager.get_messages_for(player).await;
+            if *player != rejected_player {
+                assert!(
+                    messages.is_empty(),
+                    "{} should not hear about another player's rejected move",
+                    player
+                );
+                continue;
+            }
+
+            assert_eq!(messages.len(), 1, "{} should get one error", player);
+            let message: WebSocketMessage = serde_json::from_str(&messages[0]).unwrap();
+            assert_eq!(message.message_type, MessageType::Error);
+            assert_eq!(message.payload["message"], reason);
+            assert_eq!(message.payload["error_type"], "move_rejected");
+        }
+    }
+
     /// Count how many messages of a specific type a player received (non-consuming)
     pub async fn count_message_type(&self, player: &str, msg_type: MessageType) -> usize {
         let messages = self.setup.mock_conn_manager.get_messages_for(player).await;

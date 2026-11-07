@@ -118,7 +118,7 @@ impl GameService {
     fn map_move_error(error: GameError) -> AppError {
         match error {
             GameError::StorageError(_) => AppError::Internal,
-            other => AppError::NotFound(format!("Game error: {}", other)),
+            other => AppError::BadRequest(other.player_message()),
         }
     }
 

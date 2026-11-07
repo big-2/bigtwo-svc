@@ -6,6 +6,7 @@ use tracing::info;
 use crate::{
     event::{EventBus, RoomEvent, RoomEventError, RoomEventHandler},
     game::{cards::Card, service::GameService},
+    shared::AppError,
 };
 
 pub struct GameEventRoomSubscriber {
@@ -90,11 +91,32 @@ impl GameEventRoomSubscriber {
         info!(room_id = %room_id, player_uuid = %player_uuid, cards = ?cards, "Player played move");
 
         // Execute the move using GameService
-        let move_result = self
+        let move_result = match self
             .game_service
             .try_play_move(room_id, player_uuid, cards)
             .await
-            .map_err(|e| RoomEventError::HandlerError(format!("Failed to play move: {}", e)))?;
+        {
+            Ok(move_result) => move_result,
+            Err(error) => {
+                let message = match &error {
+                    AppError::BadRequest(message) => message.clone(),
+                    _ => "Your move could not be played. Please try again.".to_string(),
+                };
+                self.event_bus
+                    .emit_to_room(
+                        room_id,
+                        RoomEvent::MoveRejected {
+                            player: player_uuid.to_string(),
+                            message,
+                        },
+                    )
+                    .await;
+                return Err(RoomEventError::HandlerError(format!(
+                    "Failed to play move: {}",
+                    error
+                )));
+            }
+        };
 
         // If player won, emit GameWon event and return
         if move_result.player_won {
@@ -229,6 +251,53 @@ mod tests {
 
         let subscriber = GameEventRoomSubscriber::new(game_service, event_bus);
         assert_eq!(subscriber.handler_name(), "GameEventRoomSubscriber");
+    }
+
+    #[tokio::test]
+    async fn rejected_move_tells_only_the_player_why() {
+        let player_mapping = Arc::new(InMemoryPlayerMappingService::new());
+        let game_service = Arc::new(GameService::new(player_mapping.clone()));
+        let event_bus = EventBus::new();
+        let mut events = event_bus.subscribe_to_room("test_room").await;
+        let subscriber = GameEventRoomSubscriber::new(game_service.clone(), event_bus);
+
+        let players: Vec<String> = (0..4)
+            .map(|i| format!("550e8400-e29b-41d4-a716-44665544000{}", i))
+            .collect();
+        for (i, uuid) in players.iter().enumerate() {
+            player_mapping
+                .register_player(uuid.clone(), format!("Player{}", i))
+                .await
+                .unwrap();
+        }
+        subscriber
+            .handle_create_game("test_room", &players)
+            .await
+            .unwrap();
+
+        let current = game_service
+            .get_game("test_room")
+            .await
+            .unwrap()
+            .current_player_turn();
+        let not_current = players.iter().find(|uuid| **uuid != current).unwrap();
+
+        let result = subscriber
+            .handle_player_played_move(
+                "test_room",
+                not_current,
+                &[Card::new(Rank::Three, Suit::Diamonds)],
+            )
+            .await;
+        assert!(result.is_err());
+
+        loop {
+            if let RoomEvent::MoveRejected { player, message } = events.recv().await.unwrap() {
+                assert_eq!(player, *not_current);
+                assert_eq!(message, "It's not your turn.");
+                break;
+            }
+        }
     }
 
     #[tokio::test]
@@ -382,6 +451,6 @@ mod tests {
             )
             .await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid player"));
+        assert!(result.unwrap_err().to_string().contains("not your turn"));
     }
 }

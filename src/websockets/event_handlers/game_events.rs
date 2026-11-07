@@ -208,6 +208,19 @@ impl GameEventHandlers {
         Ok(())
     }
 
+    pub async fn handle_move_rejected(
+        &self,
+        player: &str,
+        message: &str,
+    ) -> Result<(), RoomEventError> {
+        MessageBroadcaster::broadcast_to_players(
+            &self.connection_manager,
+            &[player.to_string()],
+            &WebSocketMessage::move_rejected(message.to_string()),
+        )
+        .await
+    }
+
     pub async fn handle_turn_changed(
         &self,
         room_id: &str,
@@ -360,6 +373,32 @@ mod tests {
         async fn count_online_players(&self) -> usize {
             0
         }
+    }
+
+    #[tokio::test]
+    async fn handle_move_rejected_sends_error_to_that_player_only() {
+        let player_mapping = Arc::new(InMemoryPlayerMappingService::new());
+        let connection_manager = Arc::new(TestConnectionManager::new());
+        let handlers = GameEventHandlers::new(
+            Arc::new(RoomService::new(Arc::new(InMemoryRoomRepository::new()))),
+            connection_manager.clone(),
+            Arc::new(GameService::new(player_mapping)),
+            EventBus::new(),
+            Arc::new(BotManager::new()),
+        );
+
+        handlers
+            .handle_move_rejected("alice-uuid", "It's not your turn.")
+            .await
+            .unwrap();
+
+        let sent = connection_manager.messages_for("alice-uuid").await;
+        assert_eq!(sent.len(), 1);
+        let parsed: serde_json::Value = serde_json::from_str(&sent[0]).unwrap();
+        assert_eq!(parsed["type"], "ERROR");
+        assert_eq!(parsed["payload"]["message"], "It's not your turn.");
+        assert_eq!(parsed["payload"]["error_type"], "move_rejected");
+        assert!(connection_manager.messages_for("bob-uuid").await.is_empty());
     }
 
     #[tokio::test]
